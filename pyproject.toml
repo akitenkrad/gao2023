@@ -1,0 +1,13 @@
+[project]
+name = "gao2023-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "s3-tools",
+]
+
+[tool.uv.workspace]
+members = ["tools"]
+
+[tool.uv.sources]
+s3-tools = { workspace = true }

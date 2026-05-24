@@ -1,0 +1,183 @@
+//! シミュレーション設定．
+//!
+//! Gao et al. (2023) "S3" のコアモデル (有向ソーシャルネットワーク上の LLM 駆動
+//! 感情・態度・行動伝播) と感度分析パラメータを保持する [`Config`] と，その JSON
+//! シリアライズ表現を定義する．ネットワーク種別・LLM 設定などの列挙型もここに集約
+//! する．
+
+use serde::Serialize;
+
+// --------------------------------------------------------------------------- //
+// ネットワーク種別
+// --------------------------------------------------------------------------- //
+
+/// 合成ソーシャルネットワークの生成モデル．
+///
+/// 論文はフォロー関係に基づく **有向** グラフを用いる．`socsim-net` の生成器
+/// (`erdos_renyi` / `watts_strogatz` / `barabasi_albert`) は **無向** トポロジ
+/// しか生成しないため (issue #18 の有向 API は生成器を持たない)，無向トポロジを
+/// 生成してからフォロー方向を付与して [`socsim_net::DiSocialNetwork`] を構築する
+/// (構築規約は [`crate::simulation::init_world`] を参照)．
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkKind {
+    /// Erdős–Rényi G(n,p) を無向生成 → フォロー方向付与．
+    ErdosRenyi,
+    /// Watts–Strogatz 小世界網を無向生成 → フォロー方向付与．
+    WattsStrogatz,
+    /// Barabási–Albert スケールフリー網を無向生成 → フォロー方向付与．
+    BarabasiAlbert,
+}
+
+impl NetworkKind {
+    /// 短い識別ラベル (CLI / 出力用)．
+    pub fn label(&self) -> &'static str {
+        match self {
+            NetworkKind::ErdosRenyi => "er",
+            NetworkKind::WattsStrogatz => "ws",
+            NetworkKind::BarabasiAlbert => "ba",
+        }
+    }
+}
+
+/// 文字列から [`NetworkKind`] をパースする．
+pub fn parse_network(s: &str) -> Result<NetworkKind, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "er" | "erdos_renyi" | "erdos-renyi" => Ok(NetworkKind::ErdosRenyi),
+        "ws" | "watts_strogatz" | "watts-strogatz" => Ok(NetworkKind::WattsStrogatz),
+        "ba" | "barabasi_albert" | "barabasi-albert" => Ok(NetworkKind::BarabasiAlbert),
+        _ => Err(format!("不正なネットワーク種別: \"{}\" (er / ws / ba)", s)),
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// LLM 設定
+// --------------------------------------------------------------------------- //
+
+/// LLM レイヤの設定 (provider / model / temperature / seed / cache)．
+///
+/// プロバイダ優先順位は «Ollama 第一 → OpenAI フォールバック» 固定．モデル・
+/// ホスト・API キーは環境変数で渡す (`OLLAMA_HOST` / `OLLAMA_MODEL` /
+/// `OPENAI_API_KEY` / `OPENAI_MODEL`)．`temperature`/`seed` で擬似決定論化する．
+#[derive(Debug, Clone)]
+pub struct LlmSettings {
+    /// 生成温度 (既定 0.0; 再現性のため)．
+    pub temperature: f32,
+    /// 生成シード (バックエンドへ渡す; Ollama は honour，OpenAI は best-effort)．
+    pub seed: u64,
+    /// プロンプト→応答キャッシュの保存先 (None なら in-memory)．
+    pub cache_path: Option<String>,
+}
+
+impl Default for LlmSettings {
+    fn default() -> Self {
+        LlmSettings {
+            temperature: 0.0,
+            seed: 0,
+            cache_path: None,
+        }
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// Config
+// --------------------------------------------------------------------------- //
+
+/// 単一実行の設定．
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// ネットワーク種別 (er / ws / ba)．
+    pub network: NetworkKind,
+    /// 人口規模 (= ノード数)．
+    pub population: usize,
+    /// ER の接続確率 p．
+    pub er_p: f64,
+    /// WS の各ノードの初期次数 k (偶数)．
+    pub ws_k: usize,
+    /// WS の再配線確率 β．
+    pub ws_beta: f64,
+    /// BA の新規ノードあたりの結合数 m．
+    pub ba_m: usize,
+    /// 伝播ラウンド数 (= engine tick 数)．
+    pub rounds: usize,
+    /// LLM Perception で選択する重要メッセージ件数 K．
+    pub top_k: usize,
+    /// LLM 駆動 Perception を使うか (既定 false = 規則ベース; 拡張スタブ)．
+    pub llm_perception: bool,
+    /// 初期に種をまく "発信源" エージェント数 (round 0 で必ず投稿する)．
+    pub seed_posters: usize,
+    /// 集団指標の収束しきい値 (positive 態度割合の round 間変化 < tol で停止)．
+    pub tol: f64,
+    /// 乱数シード (None の場合はランダム; socsim コア層のみ支配)．
+    pub seed: Option<u64>,
+    /// LLM レイヤ設定．
+    pub llm: LlmSettings,
+    /// 結果出力ディレクトリ．
+    pub output_dir: String,
+}
+
+impl Default for Config {
+    /// 標準設定 (BA, N=100, 20 round, top-k=3)．
+    fn default() -> Self {
+        Config {
+            network: NetworkKind::BarabasiAlbert,
+            population: 100,
+            er_p: 0.05,
+            ws_k: 4,
+            ws_beta: 0.1,
+            ba_m: 3,
+            rounds: 20,
+            top_k: 3,
+            llm_perception: false,
+            seed_posters: 3,
+            tol: 1e-9,
+            seed: Some(42),
+            llm: LlmSettings::default(),
+            output_dir: "results".to_string(),
+        }
+    }
+}
+
+/// `config.json` (run 用) のシリアライズ表現．
+#[derive(Serialize)]
+pub struct RunConfigJson {
+    pub command: &'static str,
+    pub network: String,
+    pub population: usize,
+    pub er_p: f64,
+    pub ws_k: usize,
+    pub ws_beta: f64,
+    pub ba_m: usize,
+    pub rounds: usize,
+    pub top_k: usize,
+    pub llm_perception: bool,
+    pub seed_posters: usize,
+    pub tol: f64,
+    pub seed: Option<u64>,
+    pub llm_temperature: f32,
+    pub llm_seed: u64,
+    pub output_dir: String,
+}
+
+impl Config {
+    /// `config.json` 用の表現を組み立てる．
+    pub fn to_run_config_json(&self) -> RunConfigJson {
+        RunConfigJson {
+            command: "run",
+            network: self.network.label().to_string(),
+            population: self.population,
+            er_p: self.er_p,
+            ws_k: self.ws_k,
+            ws_beta: self.ws_beta,
+            ba_m: self.ba_m,
+            rounds: self.rounds,
+            top_k: self.top_k,
+            llm_perception: self.llm_perception,
+            seed_posters: self.seed_posters,
+            tol: self.tol,
+            seed: self.seed,
+            llm_temperature: self.llm.temperature,
+            llm_seed: self.llm.seed,
+            output_dir: self.output_dir.clone(),
+        }
+    }
+}

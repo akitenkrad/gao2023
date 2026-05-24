@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1b2a"/>
+      <stop offset="1" stop-color="#1b263b"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b8def"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="300" fill="url(#bg)"/>
+
+  <!-- directed follow graph -->
+  <g stroke="#5b8def" stroke-width="1.6" fill="none" marker-end="url(#arrow)" opacity="0.8">
+    <line x1="120" y1="90"  x2="200" y2="150"/>
+    <line x1="120" y1="210" x2="200" y2="150"/>
+    <line x1="200" y1="150" x2="300" y2="90"/>
+    <line x1="200" y1="150" x2="300" y2="210"/>
+    <line x1="300" y1="90"  x2="380" y2="150"/>
+    <line x1="300" y1="210" x2="380" y2="150"/>
+    <line x1="200" y1="150" x2="120" y2="90"/>
+  </g>
+  <g>
+    <circle cx="120" cy="90"  r="16" fill="#90caf9"/>
+    <circle cx="120" cy="210" r="16" fill="#ffb74d"/>
+    <circle cx="200" cy="150" r="22" fill="#e53935"/>
+    <circle cx="300" cy="90"  r="16" fill="#ffb74d"/>
+    <circle cx="300" cy="210" r="16" fill="#90caf9"/>
+    <circle cx="380" cy="150" r="16" fill="#e53935"/>
+  </g>
+
+  <!-- title -->
+  <text x="470" y="120" fill="#e0e1dd" font-size="44" font-weight="700">S3 — Social-network Simulation</text>
+  <text x="470" y="166" fill="#9fb3c8" font-size="24">LLM-Empowered Agents · Gao et al. (2023) reimplementation</text>
+
+  <!-- three propagated quantities -->
+  <g font-size="18" fill="#e0e1dd">
+    <rect x="470" y="200" width="190" height="44" rx="8" fill="#1b3a2b" stroke="#4caf50"/>
+    <text x="565" y="228" text-anchor="middle">emotion</text>
+    <rect x="676" y="200" width="190" height="44" rx="8" fill="#3a1b2b" stroke="#f44336"/>
+    <text x="771" y="228" text-anchor="middle">attitude</text>
+    <rect x="882" y="200" width="190" height="44" rx="8" fill="#1b2b3a" stroke="#2196f3"/>
+    <text x="977" y="228" text-anchor="middle">behavior</text>
+  </g>
+
+  <text x="470" y="276" fill="#6b7d92" font-size="15">directed follow-graph · socsim-llm two-layer determinism (Ollama→OpenAI + cache)</text>
+</svg>
