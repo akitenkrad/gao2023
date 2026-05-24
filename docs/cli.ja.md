@@ -23,11 +23,12 @@ cargo run --release -- run [OPTIONS]
 
 | フラグ | 既定 | 意味 |
 |---|---|---|
-| `--network <er\|ws\|ba>` | `ba` | ネットワーク生成器 (この無向トポロジから有向フォローグラフを構築)． |
+| `--network <er\|ws\|ba>` | `ba` | ネットワーク生成器．BA/ER は socsim-net の有向生成器を直接使用，WS は無向トポロジを生成してから方向を付与． |
 | `--population <N>` | `100` | エージェント数 (ノード数)． |
-| `--p <P>` | `0.05` | Erdős–Rényi 接続確率． |
+| `--p <P>` | `0.05` | Erdős–Rényi (有向) 接続確率． |
 | `--ws-k <K>` | `4` | Watts–Strogatz 初期次数 (偶数)． |
 | `--ws-beta <BETA>` | `0.1` | Watts–Strogatz 再配線確率． |
+| `--ws-p-mutual <P>` | `0.5` | WS のみ: `to_directed` で無向辺が相互 (双方向) フォローになる確率 (ER/BA では無視)． |
 | `--m <M>` | `3` | Barabási–Albert 新規ノードあたり結合数． |
 | `--rounds <T>` | `20` | 伝播ラウンド数 (= engine tick)． |
 | `--top-k <K>` | `3` | Perception で選ぶ重要メッセージ件数． |
@@ -64,7 +65,7 @@ cargo run --release -- sweep [OPTIONS]
 |---|---|---|
 | `--network <list>` | `er,ws,ba` | カンマ区切りのネットワーク種別． |
 | `--population-values <list>` | `50,100,200` | カンマ区切りの人口規模． |
-| `--p / --ws-k / --ws-beta / --m` | `run` と同じ | 生成器パラメータ (グリッド共通)． |
+| `--p / --ws-k / --ws-beta / --ws-p-mutual / --m` | `run` と同じ | 生成器パラメータ (グリッド共通)． |
 | `--rounds <T>` | `20` | 伝播ラウンド数． |
 | `--top-k <K>` | `3` | Perception top-K． |
 | `--seed-posters <N>` | `3` | round 0 投稿者数． |

@@ -63,6 +63,10 @@ struct RunArgs {
     #[arg(long, default_value_t = 0.1)]
     ws_beta: f64,
 
+    /// WS の無向→有向変換で双方向 (相互フォロー) になる確率 p_mutual (ER/BA は不使用)．
+    #[arg(long, default_value_t = 0.5)]
+    ws_p_mutual: f64,
+
     /// BA の新規ノードあたりの結合数 m．
     #[arg(long, default_value_t = 3)]
     m: usize,
@@ -129,6 +133,10 @@ struct SweepArgs {
     /// WS の再配線確率 β．
     #[arg(long, default_value_t = 0.1)]
     ws_beta: f64,
+
+    /// WS の無向→有向変換で双方向 (相互フォロー) になる確率 p_mutual (ER/BA は不使用)．
+    #[arg(long, default_value_t = 0.5)]
+    ws_p_mutual: f64,
 
     /// BA の新規ノードあたりの結合数 m．
     #[arg(long, default_value_t = 3)]
@@ -259,6 +267,7 @@ fn cmd_run(args: RunArgs) {
         er_p: args.p,
         ws_k: args.ws_k,
         ws_beta: args.ws_beta,
+        ws_p_mutual: args.ws_p_mutual,
         ba_m: args.m,
         rounds: args.rounds,
         top_k: args.top_k,
@@ -394,6 +403,7 @@ fn cmd_sweep(args: SweepArgs) {
                     er_p: args.p,
                     ws_k: args.ws_k,
                     ws_beta: args.ws_beta,
+                    ws_p_mutual: args.ws_p_mutual,
                     ba_m: args.m,
                     rounds: args.rounds,
                     top_k: args.top_k,

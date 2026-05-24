@@ -23,11 +23,12 @@ cargo run --release -- run [OPTIONS]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--network <er\|ws\|ba>` | `ba` | Network generator (the directed follow-graph is built from this undirected topology). |
+| `--network <er\|ws\|ba>` | `ba` | Network generator. BA/ER use socsim-net directed generators directly; WS builds an undirected topology then assigns directions. |
 | `--population <N>` | `100` | Number of agents (nodes). |
-| `--p <P>` | `0.05` | Erdős–Rényi connection probability. |
+| `--p <P>` | `0.05` | Erdős–Rényi (directed) connection probability. |
 | `--ws-k <K>` | `4` | Watts–Strogatz initial degree (even). |
 | `--ws-beta <BETA>` | `0.1` | Watts–Strogatz rewiring probability. |
+| `--ws-p-mutual <P>` | `0.5` | WS only: probability an undirected edge becomes a mutual (bidirectional) follow in `to_directed` (ER/BA ignore this). |
 | `--m <M>` | `3` | Barabási–Albert attachments per new node. |
 | `--rounds <T>` | `20` | Propagation rounds (= engine ticks). |
 | `--top-k <K>` | `3` | Number of important messages selected per agent in perception. |
@@ -64,7 +65,7 @@ cargo run --release -- sweep [OPTIONS]
 |---|---|---|
 | `--network <list>` | `er,ws,ba` | Comma-separated network kinds. |
 | `--population-values <list>` | `50,100,200` | Comma-separated population sizes. |
-| `--p / --ws-k / --ws-beta / --m` | as `run` | Generator parameters (shared across the grid). |
+| `--p / --ws-k / --ws-beta / --ws-p-mutual / --m` | as `run` | Generator parameters (shared across the grid). |
 | `--rounds <T>` | `20` | Propagation rounds. |
 | `--top-k <K>` | `3` | Perception top-K. |
 | `--seed-posters <N>` | `3` | Round-0 posters. |

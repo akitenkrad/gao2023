@@ -30,16 +30,17 @@ gao2023/
 └── results/                    # 実行時出力 (gitignore)
 ```
 
-## 有向フォローグラフ (issue #18)
+## 有向フォローグラフ (issue #18, #28)
 
-論文は有向フォローグラフを構築する．socsim-net は有向グラフに対応済み (`DiSocialNetwork = Network<(), Directed>`, issue #18) で `out_neighbors` / `in_neighbors` / `neighbors_directed` を持つ．
+論文は有向フォローグラフを構築する．socsim-net は有向グラフに対応済み (`DiSocialNetwork = Network<(), Directed>`, issue #18) で `out_neighbors` / `in_neighbors` / `neighbors_directed` を持ち，**issue #28** で **有向生成器** も追加された．これにより「無向生成 → 方向付与」の回避策をやめ，フォローグラフを直接構築する．
 
-- **規約:** 有向辺 `A → B` = 「A が B をフォロー」．B の投稿は B をフォローする人 (`* → B`) = `in_neighbors(B)` に届く．`S3World::followers(author) = net.in_neighbors(author)` であり，`NetworkInitMechanism` が各 `outbox` メッセージを `followers(author)` へ配送する．
-- **構築:** socsim-net の乱数生成器 (`erdos_renyi` / `watts_strogatz` / `barabasi_albert`) は *無向* `SocialNetwork` しか生成しない (有向 API は生成器を持たない)．そこで `init_world` は:
-  1. 選択した生成器で無向トポロジを生成し，
-  2. その辺 (`undirected.edges()`, `a ≤ b` で正規化) を走査して world-init RNG で方向を割り当てる: 約 25% `A→B`，約 25% `B→A`，約 50% 相互 (双方向)．これにより一方向フォローと相互フォローが実際のプラットフォームのように混在する．
+- **規約:** 有向辺 `A → B` = 「A が B をフォロー」．B の投稿は B をフォローする人 (`* → B`) = `in_neighbors(B)` に届く．`S3World::followers(author) = net.in_neighbors(author)` であり，`NetworkInitMechanism` が各 `outbox` メッセージを `followers(author)` へ配送する．この規約は 3 種別すべてで同一．
+- **構築 (`init_world` 内の `build_network`):** ネットワーク種別ごとに 1 経路で，いずれも `A → B` = 「A が B をフォロー」を生成する:
+  - **BA** → `DiSocialNetwork::barabasi_albert_directed(ids, m, rng)`．各新規ノードが `m` 本の出弧 `new → target` を張り，target は (in-degree + 1) に比例して選ばれる．既にフォローされているノードが優先されるため **in-degree (= フォロワ数) が重い裾** を持ち，フォローグラフとして忠実．
+  - **ER** → `DiSocialNetwork::erdos_renyi_directed(ids, p, rng)`．順序対 `(i, j)` ごとに独立に弧を引くため非対称になりうる．
+  - **WS** → 有向生成器が無いので，無向 `watts_strogatz(ids, k, beta, rng)` を生成してから `.to_directed(p_mutual, rng)` を呼ぶ: 確率 `p_mutual` で相互 (双方向)，残りは RNG で片方向に倒す．`p_mutual` は config / `--ws-p-mutual` で公開 (既定 `0.5`)．
 
-これにより設計の UNCONFIRMED note を解消する: 有向が **既定** (無向フォールバックは置かない)．
+これにより設計の UNCONFIRMED note を解消する: 有向が **既定** (無向フォールバックは置かない)．従来の `impose_follow_direction` ヘルパは削除した．有向 BA/ER のトポロジは旧「無向＋方向付与」より忠実なため，指標の絶対値は変化する (フォロー方向の規約と `in_neighbors` 配送は不変)．
 
 ## 二層決定論
 
@@ -47,12 +48,12 @@ LLM は非決定的なので，1 層に閉じ込めて擬似決定論化する�
 
 | 層 | 担当 | 再現性 |
 |---|---|---|
-| **決定論的 socsim コア** | 有向網生成・フォロー方向付与・メッセージ配送・`ctx.rng` による活性化順序・指標・収束 | seed を与えれば bit 単位 (ChaCha20 `SimRng` + `derive_seed`) |
+| **決定論的 socsim コア** | 有向網生成 (BA/ER 有向生成器; WS は無向→`to_directed`)・メッセージ配送・`ctx.rng` による活性化順序・指標・収束 | seed を与えれば bit 単位 (ChaCha20 `SimRng` + `derive_seed`) |
 | **非決定的 LLM レイヤ** | 感情/態度/行動の同時決定・投稿コンテンツ生成 | `socsim-llm` のプロンプト→応答キャッシュ + `temperature=0` + seed 固定で擬似決定論化 |
 
 RNG ストリーム (コア層のみ):
 
-- `derive_seed(root, &[0])` → world-init RNG (無向トポロジ生成・フォロー方向コイン投げ・属性/初期感情/初期態度割当)．
+- `derive_seed(root, &[0])` → world-init RNG (有向トポロジ生成 — WS の `to_directed` の相互/方向抽選を含む — ・属性/初期感情/初期態度割当)．
 - `derive_seed(root, &[1])` → engine RNG (`RandomActivationScheduler` の毎ラウンドシャッフル)．
 
 LLM レイヤは `SimRng` の支配外であり，再現性はキャッシュに由来する．`run_metadata.json` にモデル / endpoint / 温度 / seed / cache-hit 率を記録する．
@@ -104,7 +105,7 @@ CachingClient< Box<dyn LlmClient> >   // 型消去: FallbackClient< OllamaClient
 
 - `socsim-core` — `WorldState` / `Mechanism` / `Phase` / `StepContext` / `Blackboard` / `AgentId` / `SimClock` / `SimRng` / `derive_seed`．
 - `socsim-engine` — `SimulationBuilder`, `Simulation::run_observed`, `RandomActivationScheduler`．
-- `socsim-net` — `DiSocialNetwork` (有向, issue #18) と `in_neighbors` / `out_neighbors`，`SocialNetwork` と `erdos_renyi` / `watts_strogatz` / `barabasi_albert` 生成器，`edges`．
+- `socsim-net` — `DiSocialNetwork` (有向, issue #18) と `in_neighbors` / `out_neighbors`，**有向生成器** `erdos_renyi_directed` / `barabasi_albert_directed` と `SocialNetwork::to_directed` (issue #28)，加えて `SocialNetwork` と `watts_strogatz` 生成器．
 - `socsim-llm` (`features = ["live"]`) — `LlmClient` / `OllamaClient` / `OpenAiClient` / `FallbackClient` / `CachingClient` / `PromptCache` / `LlmConfig` / `CallMetadata` / `MetadataCollector` / `mock::ScriptedClient`．
 
 ## 参考文献

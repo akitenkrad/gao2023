@@ -17,7 +17,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．そのため設
 
 ## 有向フォローグラフ
 
-論文はフォロー関係に基づく有向グラフを用いる．これは socsim-net で対応済み (`DiSocialNetwork`, issue #18)．規約: 有向辺 **`A → B` = 「A が B をフォロー」**．したがって B の投稿は B の **フォロワ** = B の in-neighbours (`in_neighbors(B)`) に届く．socsim-net の乱数生成器は *無向* トポロジしか生成しないため，無向グラフ (ER / WS / BA) を生成してから各辺にフォロー方向を付与 (約 25% `A→B`，約 25% `B→A`，約 50% 相互) して有向グラフを構築する．詳細は [docs/architecture.ja.md](docs/architecture.ja.md)．
+論文はフォロー関係に基づく有向グラフを用いる．これは socsim-net で対応済み (`DiSocialNetwork`, issue #18) で，**issue #28** で有向生成器も追加された．規約: 有向辺 **`A → B` = 「A が B をフォロー」**．したがって B の投稿は B の **フォロワ** = B の in-neighbours (`in_neighbors(B)`) に届く．BA / ER は有向生成器 (`barabasi_albert_directed` / `erdos_renyi_directed`) で直接構築する．WS には有向生成器が無いため，無向 `watts_strogatz` を生成してから `to_directed(p_mutual)` (既定 `0.5`，`--ws-p-mutual` で指定) で方向を付与する．詳細は [docs/architecture.ja.md](docs/architecture.ja.md)．
 
 ## インストールとクイックスタート
 

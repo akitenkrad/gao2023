@@ -11,16 +11,19 @@
 //!
 //! # 有向フォローグラフの構築
 //!
-//! `socsim-net` の生成器 (`erdos_renyi` / `watts_strogatz` / `barabasi_albert`) は
-//! **無向** `SocialNetwork` しか生成しない (issue #18 の有向 API は生成器を持た
-//! ない)．そこで:
-//!   1. 指定モデルで無向トポロジを生成する．
-//!   2. 各無向辺 `{a, b}` に対し，決定論的に方向を付与して [`DiSocialNetwork`] の
-//!      有向辺を張る．規約は «小さい id → 大きい id を基本に，init RNG のコイン投げ
-//!      で約半数を逆向きに» とし，双方向 (相互フォロー) も混在させる．
+//! `socsim-net` は issue #28 で **有向生成器** を提供するようになったため，ネット
+//! ワーク種別ごとに最も忠実な構築経路を用いる:
+//!   - **BA** → [`DiSocialNetwork::barabasi_albert_directed`]．各新規ノードが `m`
+//!     本の出弧 `new → target` を張り，target は in-degree 優先で選ばれる．辺
+//!     `A → B` = 「A が B をフォロー」となり，in-degree(B) = B のフォロワ数となる．
+//!   - **ER** → [`DiSocialNetwork::erdos_renyi_directed`]．順序対ごとに独立に弧を
+//!     張る (非対称になりうる)．
+//!   - **WS** → 有向生成器が無いので，無向 `watts_strogatz` を生成してから
+//!     [`SocialNetwork::to_directed`]`(p_mutual, rng)` で方向を付与する．確率
+//!     `p_mutual` で双方向 (相互フォロー)，残りは RNG で片方向に倒す．
 //!
-//! これにより辺 `A → B` = 「A が B をフォロー」となり，B の投稿は B のフォロワ
-//! (= `in_neighbors(B)`) に届く ([`crate::mechanisms::NetworkInitMechanism`])．
+//! いずれの経路でも辺 `A → B` = 「A が B をフォロー」の規約は同一で，B の投稿は B の
+//! フォロワ (= `in_neighbors(B)`) に届く ([`crate::mechanisms::NetworkInitMechanism`])．
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -81,46 +84,25 @@ pub struct SimulationResult {
     pub llm_endpoint: String,
 }
 
-/// 指定モデルで無向トポロジを生成する．
-fn generate_undirected(cfg: &Config, ids: &[AgentId], rng: &mut SimRng) -> SocialNetwork {
-    match cfg.network {
-        NetworkKind::ErdosRenyi => SocialNetwork::erdos_renyi(ids, cfg.er_p, rng),
-        NetworkKind::WattsStrogatz => {
-            SocialNetwork::watts_strogatz(ids, cfg.ws_k, cfg.ws_beta, rng)
-        }
-        NetworkKind::BarabasiAlbert => SocialNetwork::barabasi_albert(ids, cfg.ba_m, rng),
-    }
-}
-
-/// 無向トポロジへフォロー方向を付与して [`DiSocialNetwork`] を構築する．
+/// 指定モデルで **有向** フォローグラフ [`DiSocialNetwork`] を構築する．
 ///
-/// 各無向辺 `{a, b}` (a < b; `edges()` は a <= b で正規化) に対し，RNG のコイン投げで
-/// 方向を決める: 25% `a→b` のみ，25% `b→a` のみ，50% 双方向 (相互フォロー)．これで
-/// 一方向フォローと相互フォローが混在した有向グラフになる．
-fn impose_follow_direction(
-    undirected: &SocialNetwork,
-    ids: &[AgentId],
-    rng: &mut SimRng,
-) -> DiSocialNetwork {
-    let mut di = DiSocialNetwork::empty();
-    for &id in ids {
-        di.add_node(id);
-    }
-    for (a, b) in undirected.edges() {
-        if a == b {
-            continue; // 自己ループは無視．
+/// 規約は全種別で同一: 辺 `A → B` = 「A が B をフォロー」．したがって B の投稿は
+/// `in_neighbors(B)` (= B のフォロワ) に届く．
+///   - **BA / ER** は `socsim-net` の有向生成器 (issue #28) を直接呼ぶ．BA は
+///     in-degree 優先選択なので in-degree がフォロワ数の重い裾を持つ．
+///   - **WS** は有向生成器が無いため，無向 `watts_strogatz` を生成してから
+///     [`SocialNetwork::to_directed`]`(cfg.ws_p_mutual, rng)` で方向を付与する．
+fn build_network(cfg: &Config, ids: &[AgentId], rng: &mut SimRng) -> DiSocialNetwork {
+    match cfg.network {
+        NetworkKind::ErdosRenyi => DiSocialNetwork::erdos_renyi_directed(ids, cfg.er_p, rng),
+        NetworkKind::BarabasiAlbert => {
+            DiSocialNetwork::barabasi_albert_directed(ids, cfg.ba_m, rng)
         }
-        // 0,1,2,3 → {a→b}, {b→a}, {双方向}, {双方向}
-        match rng.gen_range(0u8..4) {
-            0 => di.add_edge(a, b),
-            1 => di.add_edge(b, a),
-            _ => {
-                di.add_edge(a, b);
-                di.add_edge(b, a);
-            }
+        NetworkKind::WattsStrogatz => {
+            let undirected = SocialNetwork::watts_strogatz(ids, cfg.ws_k, cfg.ws_beta, rng);
+            undirected.to_directed(cfg.ws_p_mutual, rng)
         }
     }
-    di
 }
 
 /// 世界状態を初期化する (有向網構築 + 属性/初期感情/初期態度割当)．
@@ -131,8 +113,7 @@ fn impose_follow_direction(
 pub fn init_world(cfg: &Config, rng: &mut SimRng) -> S3World {
     let ids: Vec<AgentId> = (0..cfg.population as u64).map(AgentId).collect();
 
-    let undirected = generate_undirected(cfg, &ids, rng);
-    let net = impose_follow_direction(&undirected, &ids, rng);
+    let net = build_network(cfg, &ids, rng);
 
     let mut agents: BTreeMap<AgentId, AgentState> = BTreeMap::new();
     for (idx, &id) in ids.iter().enumerate() {

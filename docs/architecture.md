@@ -30,16 +30,17 @@ gao2023/
 └── results/                    # runtime output (gitignored)
 ```
 
-## Directed follow-graph (issue #18)
+## Directed follow-graph (issues #18, #28)
 
-The paper builds a directed follow-graph. socsim-net now supports directed graphs (`DiSocialNetwork = Network<(), Directed>`, issue #18) with `out_neighbors` / `in_neighbors` / `neighbors_directed`.
+The paper builds a directed follow-graph. socsim-net supports directed graphs (`DiSocialNetwork = Network<(), Directed>`, issue #18) with `out_neighbors` / `in_neighbors` / `neighbors_directed`, and since **issue #28** it also ships **directed generators**, so the follow-graph is built directly instead of via an undirected-then-impose-direction workaround.
 
-- **Convention:** a directed edge `A → B` means **"A follows B"**. A post by `B` should reach the people who follow `B`, i.e. the nodes `* → B`, which are exactly `in_neighbors(B)`. `S3World::followers(author) = net.in_neighbors(author)`, and `NetworkInitMechanism` delivers each `outbox` message to `followers(author)`.
-- **Construction:** socsim-net's random generators (`erdos_renyi` / `watts_strogatz` / `barabasi_albert`) only build *undirected* `SocialNetwork`s (the directed API has no generators). So `init_world`:
-  1. generates an undirected topology with the chosen generator, then
-  2. iterates its edges (`undirected.edges()`, canonicalised `a ≤ b`) and, for each, draws from the world-init RNG to assign a direction: ≈25% `A→B`, ≈25% `B→A`, ≈50% mutual (both arcs). This mixes one-directional and reciprocal follows, as on a real platform.
+- **Convention:** a directed edge `A → B` means **"A follows B"**. A post by `B` should reach the people who follow `B`, i.e. the nodes `* → B`, which are exactly `in_neighbors(B)`. `S3World::followers(author) = net.in_neighbors(author)`, and `NetworkInitMechanism` delivers each `outbox` message to `followers(author)`. This convention is identical for all three network types.
+- **Construction (`build_network` in `init_world`):** one path per network type, all producing `A → B` = "A follows B":
+  - **BA** → `DiSocialNetwork::barabasi_albert_directed(ids, m, rng)`. Each new node emits `m` out-arcs `new → target`, with targets chosen ∝ (in-degree + 1). Because attachment favours already-followed nodes, **in-degree (= follower count) is heavy-tailed**, the faithful follow-graph shape.
+  - **ER** → `DiSocialNetwork::erdos_renyi_directed(ids, p, rng)`. Each ordered pair `(i, j)` draws an arc independently, so the graph may be asymmetric.
+  - **WS** → no directed generator exists, so generate an undirected `watts_strogatz(ids, k, beta, rng)` and call `.to_directed(p_mutual, rng)`: with probability `p_mutual` an edge becomes **mutual** (both arcs), otherwise the RNG keeps one direction. `p_mutual` is exposed via config / `--ws-p-mutual` (default `0.5`).
 
-This resolves the design's UNCONFIRMED note: directed is the **default** (no undirected fallback).
+This resolves the design's UNCONFIRMED note: directed is the **default** (no undirected fallback). The previous `impose_follow_direction` helper is removed; the directed BA/ER topologies are more faithful than the old undirected+imposed graph, so absolute metric values differ (the follow-direction convention and `in_neighbors` delivery are unchanged).
 
 ## Two-layer determinism
 
@@ -47,12 +48,12 @@ An LLM is non-deterministic, so it is confined to one layer and pseudo-determini
 
 | Layer | What it owns | Reproducibility |
 |---|---|---|
-| **Deterministic socsim core** | directed-network generation, follow-direction assignment, message delivery, activation order via `ctx.rng`, metrics, convergence | bit-for-bit given the seed (ChaCha20 `SimRng` + `derive_seed`) |
+| **Deterministic socsim core** | directed-network generation (BA/ER directed generators; WS undirected→`to_directed`), message delivery, activation order via `ctx.rng`, metrics, convergence | bit-for-bit given the seed (ChaCha20 `SimRng` + `derive_seed`) |
 | **Non-deterministic LLM layer** | joint emotion/attitude/behavior decision, generated post content | pseudo-determinised by `socsim-llm`'s prompt→response cache + `temperature=0` + fixed `seed` |
 
 RNG streams (core layer only):
 
-- `derive_seed(root, &[0])` → world-init RNG (undirected topology generation, follow-direction coin flips, profile / initial-emotion / initial-attitude assignment).
+- `derive_seed(root, &[0])` → world-init RNG (directed topology generation — including `to_directed`'s mutual/direction draws for WS — and profile / initial-emotion / initial-attitude assignment).
 - `derive_seed(root, &[1])` → engine RNG (`RandomActivationScheduler` shuffle each round).
 
 The LLM layer is **not** under `SimRng`. Its reproducibility comes entirely from the cache: with a warm cache, an identical prompt replays an identical response. `run_metadata.json` records model / endpoint / temperature / seed / cache-hit rate.
@@ -104,7 +105,7 @@ Real-data MSED / Cor alignment (paper Table 4/5) and the LT / IC / Voter / DeGro
 
 - `socsim-core` — `WorldState` / `Mechanism` / `Phase` / `StepContext` / `Blackboard` / `AgentId` / `SimClock` / `SimRng` / `derive_seed`.
 - `socsim-engine` — `SimulationBuilder`, `Simulation::run_observed`, `RandomActivationScheduler`.
-- `socsim-net` — `DiSocialNetwork` (directed, issue #18) with `in_neighbors` / `out_neighbors`, `SocialNetwork` and the `erdos_renyi` / `watts_strogatz` / `barabasi_albert` generators, `edges`.
+- `socsim-net` — `DiSocialNetwork` (directed, issue #18) with `in_neighbors` / `out_neighbors`, the **directed generators** `erdos_renyi_directed` / `barabasi_albert_directed` and `SocialNetwork::to_directed` (issue #28), plus `SocialNetwork` and its `watts_strogatz` generator.
 - `socsim-llm` (`features = ["live"]`) — `LlmClient` / `OllamaClient` / `OpenAiClient` / `FallbackClient` / `CachingClient` / `PromptCache` / `LlmConfig` / `CallMetadata` / `MetadataCollector` / `mock::ScriptedClient`.
 
 ## References

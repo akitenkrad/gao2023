@@ -17,7 +17,7 @@ The cache — not the model — is the reproducibility mechanism: a warm cache r
 
 ## Directed follow-graph
 
-The paper uses a directed follow-graph; this is now supported in socsim-net (`DiSocialNetwork`, issue #18). Convention: a directed edge **`A → B` means "A follows B"**, so B's post reaches B's **followers** = the in-neighbours of B (`in_neighbors(B)`). socsim-net's random generators only produce *undirected* topologies, so the build generates an undirected graph (ER / WS / BA) and then imposes follow-direction on each edge (≈25% `A→B`, ≈25% `B→A`, ≈50% mutual) to construct the directed graph. See [docs/architecture.md](docs/architecture.md).
+The paper uses a directed follow-graph; this is supported in socsim-net (`DiSocialNetwork`, issue #18), which since **issue #28** also ships directed generators. Convention: a directed edge **`A → B` means "A follows B"**, so B's post reaches B's **followers** = the in-neighbours of B (`in_neighbors(B)`). BA and ER are built directly with the directed generators (`barabasi_albert_directed` / `erdos_renyi_directed`); WS has no directed generator, so an undirected `watts_strogatz` graph is converted with `to_directed(p_mutual)` (default `0.5`, see `--ws-p-mutual`). See [docs/architecture.md](docs/architecture.md).
 
 ## Install & Quick start
 

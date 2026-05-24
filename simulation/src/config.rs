@@ -13,18 +13,19 @@ use serde::Serialize;
 
 /// 合成ソーシャルネットワークの生成モデル．
 ///
-/// 論文はフォロー関係に基づく **有向** グラフを用いる．`socsim-net` の生成器
-/// (`erdos_renyi` / `watts_strogatz` / `barabasi_albert`) は **無向** トポロジ
-/// しか生成しないため (issue #18 の有向 API は生成器を持たない)，無向トポロジを
-/// 生成してからフォロー方向を付与して [`socsim_net::DiSocialNetwork`] を構築する
-/// (構築規約は [`crate::simulation::init_world`] を参照)．
+/// 論文はフォロー関係に基づく **有向** グラフを用いる．`socsim-net` は issue #28 で
+/// **有向生成器** を提供するようになったため，ER/BA は有向生成器を直接呼ぶ:
+/// `erdos_renyi_directed` / `barabasi_albert_directed` ([`socsim_net::DiSocialNetwork`])．
+/// WS には有向生成器が無いので，無向の `watts_strogatz` を生成してから
+/// `to_directed(p_mutual, rng)` で方向を付与する (構築規約は
+/// [`crate::simulation::init_world`] を参照)．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkKind {
-    /// Erdős–Rényi G(n,p) を無向生成 → フォロー方向付与．
+    /// Erdős–Rényi 有向 G(n,p) (`erdos_renyi_directed`; 各順序対ごとに独立な弧)．
     ErdosRenyi,
-    /// Watts–Strogatz 小世界網を無向生成 → フォロー方向付与．
+    /// Watts–Strogatz 小世界網を無向生成 → `to_directed(p_mutual)` で方向付与．
     WattsStrogatz,
-    /// Barabási–Albert スケールフリー網を無向生成 → フォロー方向付与．
+    /// Barabási–Albert 有向版 (`barabasi_albert_directed`; in-degree 優先選択)．
     BarabasiAlbert,
 }
 
@@ -95,6 +96,10 @@ pub struct Config {
     pub ws_k: usize,
     /// WS の再配線確率 β．
     pub ws_beta: f64,
+    /// WS の無向→有向変換 (`to_directed`) で双方向 (相互フォロー) になる確率
+    /// `p_mutual`．残りの辺は RNG で片方向に倒す (既定 0.5)．ER/BA は有向生成器を
+    /// 直接使うため本値は影響しない．
+    pub ws_p_mutual: f64,
     /// BA の新規ノードあたりの結合数 m．
     pub ba_m: usize,
     /// 伝播ラウンド数 (= engine tick 数)．
@@ -124,6 +129,7 @@ impl Default for Config {
             er_p: 0.05,
             ws_k: 4,
             ws_beta: 0.1,
+            ws_p_mutual: 0.5,
             ba_m: 3,
             rounds: 20,
             top_k: 3,
@@ -146,6 +152,7 @@ pub struct RunConfigJson {
     pub er_p: f64,
     pub ws_k: usize,
     pub ws_beta: f64,
+    pub ws_p_mutual: f64,
     pub ba_m: usize,
     pub rounds: usize,
     pub top_k: usize,
@@ -168,6 +175,7 @@ impl Config {
             er_p: self.er_p,
             ws_k: self.ws_k,
             ws_beta: self.ws_beta,
+            ws_p_mutual: self.ws_p_mutual,
             ba_m: self.ba_m,
             rounds: self.rounds,
             top_k: self.top_k,
