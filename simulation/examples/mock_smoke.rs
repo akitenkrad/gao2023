@@ -10,9 +10,8 @@
 //! ```
 
 use std::env;
-use std::fs;
 
-use chrono::Local;
+use socsim_results::{refresh_latest_symlink, timestamp, write_json};
 
 use s3_simulation::config::Config;
 use s3_simulation::llm::wrap_client;
@@ -24,7 +23,7 @@ use socsim_llm::PromptCache;
 
 fn main() {
     let base = env::args().nth(1).unwrap_or_else(|| "results".to_string());
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let timestamp = timestamp();
     let output_dir = format!("{base}/{timestamp}");
 
     let cfg = Config {
@@ -68,16 +67,12 @@ fn main() {
     save_metrics(&result.metrics_history, &cfg.output_dir);
     save_run_metadata(&result, &cfg, &cfg.output_dir);
 
-    // config.json
+    // config.json (socsim_results::write_json に委譲)．
     let cfg_path = format!("{}/config.json", cfg.output_dir);
-    let f = fs::File::create(&cfg_path).unwrap();
-    serde_json::to_writer_pretty(f, &cfg.to_run_config_json()).unwrap();
+    write_json(&cfg.to_run_config_json(), &cfg_path).unwrap();
 
-    // latest symlink
-    let link = format!("{base}/latest");
-    let _ = fs::remove_file(&link);
-    #[cfg(unix)]
-    let _ = std::os::unix::fs::symlink(&timestamp, &link);
+    // latest symlink (socsim_results に委譲)．
+    let _ = refresh_latest_symlink(&base, &timestamp);
 
     let last = result.metrics_history.last().unwrap();
     println!("mock smoke wrote: {output_dir}");
