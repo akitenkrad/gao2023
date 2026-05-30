@@ -34,10 +34,10 @@ use socsim_llm::MetadataCollector;
 use crate::config::LlmSettings;
 use crate::llm::{llm_config, S3Client};
 use crate::metrics::attitude_positive_frac;
-use crate::parse::parse_contagion;
+use crate::parse::{parse_contagion, parse_perception_ranking};
 use crate::perception::select_top_k;
-use crate::prompts::contagion_prompt;
-use crate::world::{Message, S3World};
+use crate::prompts::{contagion_prompt, perception_prompt};
+use crate::world::{AgentState, Message, S3World};
 
 /// 共有 LLM クライアント (run ドライバとメカニズムで共有)．
 pub type SharedClient = Rc<RefCell<S3Client>>;
@@ -99,21 +99,96 @@ impl Mechanism<S3World> for NetworkInitMechanism {
 /// 重要メッセージ選択 (`Decision`)．
 ///
 /// 各エージェントが inbox/memory から影響スコア (時間減衰 + 関連性 + 真正性) 上位
-/// K 件を選び，scratch (`SCRATCH_SELECTED`) に格納する．既定は **規則ベース**
-/// ([`crate::perception::select_top_k`])．`llm_perception` フラグは LLM 駆動選択の
-/// 拡張スタブ (現状は規則ベースにフォールバック)．
+/// K 件を選び，scratch (`SCRATCH_SELECTED`) に格納する．
+///
+/// - **既定 (規則ベース)**: [`crate::perception::select_top_k`]．LLM 呼び出し 0 回，
+///   bit 決定論的．`--llm-perception` 無効時はこの経路のみを通る．
+/// - **`--llm-perception` 有効**: 候補メッセージを LLM に提示し，関連順の番号列を
+///   選ばせる ([`crate::prompts::perception_prompt`] +
+///   [`crate::parse::parse_perception_ranking`])．LLM が番号を返せなかった場合や
+///   候補が空のときは規則ベースへフォールバックする．呼び出しは
+///   [`SocialContagionMechanism`] と同一の共有クライアント・キャッシュを使う．
 pub struct LLMPerceptionMechanism {
     top_k: usize,
-    /// LLM 駆動 Perception を使うか (拡張スタブ; 現状は規則ベース)．
+    /// LLM 駆動 Perception を使うか (false = 規則ベースのみ; 既定経路はバイト等価)．
     llm_perception: bool,
+    /// LLM 駆動時の共有クライアント (規則ベース時は `None`)．
+    client: Option<SharedClient>,
+    /// LLM 駆動時の共有メタデータ (cache-hit 集計)．
+    metadata: Option<SharedMetadata>,
+    /// LLM 設定 (温度・seed・cache)．
+    settings: LlmSettings,
+    /// 議論トピック (プロンプト用)．
+    topic: String,
 }
 
 impl LLMPerceptionMechanism {
-    /// 選択件数 K と LLM-perception フラグから作る．
+    /// 規則ベース Perception を作る (LLM クライアント無し; `--llm-perception` 無効)．
     pub fn new(top_k: usize, llm_perception: bool) -> Self {
         LLMPerceptionMechanism {
             top_k: top_k.max(1),
             llm_perception,
+            client: None,
+            metadata: None,
+            settings: LlmSettings::default(),
+            topic: String::new(),
+        }
+    }
+
+    /// LLM 駆動 Perception を作る (`--llm-perception` 有効; 共有クライアントを渡す)．
+    pub fn with_llm(
+        top_k: usize,
+        client: SharedClient,
+        metadata: SharedMetadata,
+        settings: LlmSettings,
+        topic: String,
+    ) -> Self {
+        LLMPerceptionMechanism {
+            top_k: top_k.max(1),
+            llm_perception: true,
+            client: Some(client),
+            metadata: Some(metadata),
+            settings,
+            topic,
+        }
+    }
+
+    /// 候補 (inbox + memory) を集める．規則ベースと同じ候補集合・順序を保つ．
+    fn candidates(agent: &AgentState, inbox: &[Message]) -> Vec<Message> {
+        inbox.iter().chain(agent.memory.iter()).cloned().collect()
+    }
+
+    /// LLM に候補から上位 K を選ばせる．番号が読めなければ規則ベースへフォールバック．
+    fn llm_select(
+        &self,
+        id: AgentId,
+        agent: &AgentState,
+        inbox: &[Message],
+        now: u64,
+    ) -> Result<Vec<Message>> {
+        let candidates = Self::candidates(agent, inbox);
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (client, metadata) = match (&self.client, &self.metadata) {
+            (Some(c), Some(m)) => (c, m),
+            _ => return Ok(select_top_k(id, agent, inbox, now, self.top_k)),
+        };
+        let prompt = perception_prompt(agent, &self.topic, &candidates, self.top_k);
+        let text = {
+            let mut client = client.borrow_mut();
+            let resp = client
+                .complete(&prompt, &llm_config(&self.settings))
+                .map_err(|e| SocsimError::Mechanism(format!("perception LLM call failed: {e}")))?;
+            metadata.borrow_mut().record(resp.metadata.clone());
+            resp.text
+        };
+        let picks = parse_perception_ranking(&text, candidates.len(), self.top_k);
+        if picks.is_empty() {
+            // 番号を 1 つも読めなければ規則ベースへフォールバック (頑健性)．
+            Ok(select_top_k(id, agent, inbox, now, self.top_k))
+        } else {
+            Ok(picks.into_iter().map(|i| candidates[i].clone()).collect())
         }
     }
 }
@@ -128,8 +203,6 @@ impl Mechanism<S3World> for LLMPerceptionMechanism {
     }
 
     fn apply(&mut self, _phase: Phase, ctx: &mut StepContext<'_, S3World>) -> Result<()> {
-        // LLM 駆動 Perception の拡張点: 現状は規則ベースに委ねる (将来 LLM へ差替)．
-        let _ = self.llm_perception;
         let now = ctx.clock.t();
         let mut selected: BTreeMap<AgentId, Vec<Message>> = BTreeMap::new();
         for &id in ctx.world.agents.keys() {
@@ -140,7 +213,12 @@ impl Mechanism<S3World> for LLMPerceptionMechanism {
                 .get(&id)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            let top = select_top_k(id, agent, inbox, now, self.top_k);
+            let top = if self.llm_perception && self.client.is_some() {
+                self.llm_select(id, agent, inbox, now)?
+            } else {
+                // 規則ベース (LLM 無効時のバイト等価経路)．
+                select_top_k(id, agent, inbox, now, self.top_k)
+            };
             selected.insert(id, top);
         }
         ctx.scratch.insert(SCRATCH_SELECTED, selected);

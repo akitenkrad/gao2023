@@ -76,9 +76,48 @@ pub fn parse_contagion(text: &str) -> ContagionDecision {
     }
 }
 
+/// LLM 駆動 Perception 応答 (`crate::prompts::perception_prompt`) から **1 始まりの
+/// 番号列** を抽出し，0 始まりの候補インデックスへ変換する．
+///
+/// 重複・範囲外 (`>= n_candidates`) は捨て，先頭から最大 `k` 件を順序保存で返す．
+/// 番号が 1 つも読めなければ空 (呼び出し側で規則ベースへフォールバック)．
+pub fn parse_perception_ranking(text: &str, n_candidates: usize, k: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for tok in text.split(|c: char| !c.is_ascii_digit()) {
+        if tok.is_empty() {
+            continue;
+        }
+        if let Ok(one_based) = tok.parse::<usize>() {
+            if one_based == 0 || one_based > n_candidates {
+                continue;
+            }
+            let idx = one_based - 1;
+            if !out.contains(&idx) {
+                out.push(idx);
+                if out.len() >= k {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_perception_ranking() {
+        // 1 始まり番号を 0 始まりへ; 重複・範囲外は捨て，最大 k 件．
+        assert_eq!(parse_perception_ranking("3, 1, 5", 5, 3), vec![2, 0, 4]);
+        assert_eq!(parse_perception_ranking("2 2 9 4", 5, 3), vec![1, 3]);
+        assert_eq!(
+            parse_perception_ranking("no numbers here", 5, 3),
+            Vec::<usize>::new()
+        );
+        assert_eq!(parse_perception_ranking("1,2,3,4", 5, 2), vec![0, 1]);
+    }
 
     #[test]
     fn parses_strict_format() {

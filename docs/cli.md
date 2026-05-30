@@ -1,6 +1,6 @@
 # CLI
 
-The Rust binary `s3` has two subcommands: `run` (a single simulation) and `sweep` (a grid over network × population). Phase 3's `reproduce` is not implemented.
+The Rust binary `s3` has four subcommands: `run` (a single simulation), `sweep` (a grid over network × population), `reproduce` (a one-shot paper reproduction with observed-vs-paper checks and classical-baseline comparison), and `baseline` (a single classical diffusion / opinion-dynamics baseline).
 
 ## LLM environment variables
 
@@ -32,7 +32,7 @@ cargo run --release -- run [OPTIONS]
 | `--m <M>` | `3` | Barabási–Albert attachments per new node. |
 | `--rounds <T>` | `20` | Propagation rounds (= engine ticks). |
 | `--top-k <K>` | `3` | Number of important messages selected per agent in perception. |
-| `--llm-perception` | off | Use LLM-driven perception (extension stub; falls back to rule-based). |
+| `--llm-perception` | off | Use LLM-driven perception: the candidate messages are listed to the LLM, which returns the most-relevant indices (see `prompts::perception_prompt`). Falls back to the rule-based score if the LLM returns no usable numbers. When off, the rule-based path runs with zero LLM perception calls and is bit-identical to before the flag existed. |
 | `--seed-posters <N>` | `3` | Agents that always post in round 0 (seed the cascade). |
 | `--tol <TOL>` | `1e-9` | Convergence threshold on the round-to-round change of the positive-attitude fraction. |
 | `--seed <SEED>` | random | Core-layer seed (controls socsim only; the LLM layer is cache-determinised). |
@@ -88,6 +88,88 @@ cargo run --release -- sweep \
     --network er,ws,ba \
     --population-values 50,100,200 \
     --rounds 20 --runs 3 --seed 42
+```
+
+## `reproduce`
+
+Runs S³ once, computes the headline propagation observables, checks them against the paper's qualitative bands (PASS / off), then runs the four classical baselines (LT / IC / Voter / DeGroot) on the **same directed graph and seed** for comparison.
+
+```bash
+cargo run --release -- reproduce [OPTIONS]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--network <er\|ws\|ba>` | `ba` | Network generator. |
+| `--population <N>` | `200` | Number of agents. |
+| `--p / --m` | `0.05` / `3` | ER probability / BA attachments. |
+| `--rounds <T>` | `20` | Propagation rounds. |
+| `--top-k <K>` | `3` | Perception top-K. |
+| `--seed-posters <N>` | `3` | Round-0 posters (also the baselines' seed set). |
+| `--llm-perception` | off | Use LLM-driven perception in the S³ run. |
+| `--seed <SEED>` | `42` | Core-layer seed (shared by S³ and the baselines). |
+| `--tol <TOL>` | `1e-12` | Convergence threshold (reproduce does not early-stop by default). |
+| `--mock` | off | Run S³ with a scripted offline client (no live LLM). Use this for sandboxed / CI reproduction. |
+| `--quick` | off | Smoke mode: caps population/rounds. |
+| `--temperature / --llm-seed / --cache-path` | as `run` | LLM settings (live runs only; `--mock` uses an in-memory cache). |
+| `--lt-theta <θ>` | `0.3` | Linear-Threshold uniform threshold. |
+| `--ic-p <p>` | `0.15` | Independent-Cascade per-edge infection probability. |
+| `--degroot-self-weight <w>` | `0.5` | DeGroot self-weight. |
+| `--output-dir <DIR>` | `results` | Output base directory. |
+
+The observables and their qualitative bands:
+
+| Indicator | Direction | Band | Meaning |
+|---|---|---|---|
+| `attitude_rise` | `>=` | `0.05` | positive-attitude fraction `t=end − t=0`. |
+| `cascade_growth_ratio` | `>=` | `1.5` | cascade size `end / initial`. |
+| `behavior_adoption_final` | `>=` | `0.05` | final repost/post fraction. |
+| `emotion_msed` | `<=` | `0.20` | mean-squared error between the final emotion distribution and the paper's reference (MSED proxy). |
+| `attitude_corr` | `>=` | `0.30` | Pearson correlation of the attitude time series with a monotone-increasing ramp (Cor proxy). |
+
+Because the local model differs from the paper's GPT, the targets are **qualitative** (trend and sign), not the paper's exact numbers.
+
+Outputs are written to `results/reproduce_{timestamp}/`:
+
+- `reproduce_summary.json` — observed-vs-paper checks (`observed`, `paper`, `direction`, `pass`), the PASS count, the S³ final fractions, and the four baseline comparisons.
+- `s3_metrics.csv` (and `metrics.csv`) — the S³ round-by-round population metrics.
+- `baseline_{lt,ic,voter,degroot}.csv` — each baseline's round-by-round metrics (`t`, `active_frac`, `mean_opinion`, `cumulative_reached`).
+- `config.json` — the S³ configuration.
+- `figures/` — populated by `uv run s3-tools reproduce`.
+
+### Example (offline)
+
+```bash
+cargo run --release -- reproduce --mock --quick --seed 42
+uv run s3-tools reproduce --results-dir results/latest
+```
+
+## `baseline`
+
+Runs a single classical diffusion / opinion-dynamics model on the same directed follow-graph as S³ (zero LLM calls, bit-deterministic).
+
+```bash
+cargo run --release -- baseline --model <lt|ic|voter|degroot> [OPTIONS]
+```
+
+| Model | Dynamics |
+|---|---|
+| `lt` | Linear Threshold (Granovetter 1978 / KKT 2003): a node activates once the active fraction among the people it follows reaches θ (progressive). |
+| `ic` | Independent Cascade (KKT 2003): a newly active node tries to infect each follower with probability `p`, once (progressive). |
+| `voter` | Voter model (Clifford–Sudbury 1973): each round a node copies the binary opinion of a random followee (non-progressive). |
+| `degroot` | DeGroot (1974): linear consensus — a node's continuous opinion moves toward the mean opinion of the people it follows. |
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--model <...>` | `lt` | Baseline model. |
+| `--network / --population / --p / --m / --rounds / --seed-posters / --seed / --tol` | as `reproduce` | Topology and run parameters (the directed graph matches S³ for the same seed). |
+| `--lt-theta / --ic-p / --degroot-self-weight` | `0.3` / `0.15` / `0.5` | Model parameters. |
+| `--output-dir <DIR>` | `results` | Output base directory. |
+
+Outputs are written to `results/baseline_{model}_{timestamp}/`: `baseline_{model}.csv` and `config.json`.
+
+```bash
+cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42
 ```
 
 ---

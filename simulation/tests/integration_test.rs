@@ -36,6 +36,21 @@ fn scripted_inactive() -> S3Client {
     wrap_client(backend, PromptCache::in_memory())
 }
 
+/// Perception 番号列 (`Choose ... numbers`) には番号列を，Contagion には
+/// positive/post を返す mock．`--llm-perception` 経路を駆動する．
+fn scripted_perception_and_post() -> S3Client {
+    let backend = ScriptedClient::new("mock-model", |prompt: &str| {
+        if prompt.contains("Answer with ONLY the numbers") {
+            // Perception プロンプト: 先頭候補を選ぶ番号列を返す．
+            "1, 2".to_string()
+        } else {
+            "EMOTION: moderate\nATTITUDE: positive\nBEHAVIOR: post\nCONTENT: A short post."
+                .to_string()
+        }
+    });
+    wrap_client(backend, PromptCache::in_memory())
+}
+
 fn base_config() -> Config {
     Config {
         network: NetworkKind::BarabasiAlbert,
@@ -66,6 +81,60 @@ fn unanimous_positive_drives_attitude_fraction_up() {
     // 集計配線: t=0 が記録され，全 round が連続している．
     assert_eq!(result.metrics_history[0].t, 0);
     assert!(result.metrics_history.len() >= 2);
+}
+
+// --------------------------------------------------------------------------- //
+// --llm-perception 経路: mock で LLM 駆動選択を回し，well-formed かつ決定論的
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn llm_perception_mock_path_runs_and_is_deterministic() {
+    let mut cfg = base_config();
+    cfg.llm_perception = true;
+    let a = run_with_client(&cfg, scripted_perception_and_post()).unwrap();
+    let b = run_with_client(&cfg, scripted_perception_and_post()).unwrap();
+    // well-formed.
+    assert_eq!(a.metrics_history[0].t, 0);
+    assert!(a.metrics_history.last().unwrap().attitude_positive_frac > 0.9);
+    // 同一 mock + 同一シードは完全再現 (キャッシュ + 決定論的選択)．
+    let af: Vec<f64> = a
+        .metrics_history
+        .iter()
+        .map(|m| m.attitude_positive_frac)
+        .collect();
+    let bf: Vec<f64> = b
+        .metrics_history
+        .iter()
+        .map(|m| m.attitude_positive_frac)
+        .collect();
+    assert_eq!(af, bf, "llm-perception mock 経路は決定論的であるべき");
+}
+
+// --------------------------------------------------------------------------- //
+// 既定 (llm_perception=false) 経路は LLM-perception フラグの追加に影響されない
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn rule_perception_default_path_is_bit_identical() {
+    // 同一 mock を 2 回．llm_perception=false 経路は規則ベースのみで bit 等価．
+    let cfg = base_config();
+    let a = run_with_client(&cfg, scripted_post()).unwrap();
+    let b = run_with_client(&cfg, scripted_post()).unwrap();
+    let casc_a: Vec<usize> = a
+        .metrics_history
+        .iter()
+        .map(|m| m.info_cascade_size)
+        .collect();
+    let casc_b: Vec<usize> = b
+        .metrics_history
+        .iter()
+        .map(|m| m.info_cascade_size)
+        .collect();
+    assert_eq!(casc_a, casc_b);
+    assert!(
+        !cfg.llm_perception,
+        "既定経路は規則ベース (LLM 呼び出し 0 回)"
+    );
 }
 
 // --------------------------------------------------------------------------- //

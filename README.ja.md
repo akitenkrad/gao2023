@@ -60,9 +60,20 @@ uv run s3-tools visualize
 - [可視化](docs/visualization.ja.md) — Python `s3-tools` と出力の解釈．
 - [アーキテクチャ](docs/architecture.ja.md) — リポジトリ構成・有向フォローグラフ・二層決定論・socsim/`socsim-llm`・メカニズム・指標・参考文献．
 
-## スコープ
+## 一括再現と古典ベースライン
 
-本リポジトリは現在 **Phase 1** (有向網上の LLM 感情/態度/行動伝播コアモデル，Ollama→OpenAI フォールバック + キャッシュの二層 LLM クライアント，`run` サブコマンド，集団レベル指標) と **Phase 2** (network × population の `sweep`，Python `visualize` / `visualize-sweep` / `show-experiment-settings`) を実装している．論文 Fig./Table の一括再現 (`reproduce`，実データ MSED / Cor 整合と LT / IC / Voter / DeGroot ベースライン比較)，および LLM 駆動 Perception は将来課題 (Phase 3) とし，拡張点を随所に残している．
+`reproduce` は S³ を 1 回実行し，headline 伝播観測量 (態度上昇・カスケード成長・行動採用・感情分布の MSED 代理・態度時系列の Pearson 相関代理) を論文の定性帯と照合して `reproduce_summary.json` に PASS / off を書き出す．比較のため，**同一の有向フォローグラフ・同一シード**で 4 つの古典的拡散・意見ダイナミクス — **Linear Threshold (LT)**，**Independent Cascade (IC)**，**Voter**，**DeGroot** — を実行し (LLM 呼び出し 0 回・bit 決定論的)，`s3-tools reproduce` が LLM 駆動 S³ 曲線と重ねて描画する．`--llm-perception` フラグは Perception を実 LLM 呼び出し化する (候補メッセージを LLM が関連順にランキングする)．既定の規則ベース経路は Perception の LLM 呼び出しを行わない．ローカルモデルは論文の GPT と異なるため再現目標は定性的である．
+
+```bash
+# オフライン一括再現 (live LLM 不要) + 図
+cargo run --release -- reproduce --mock --quick --seed 42
+uv run s3-tools reproduce --results-dir results/latest
+
+# 同一有向網上の古典ベースライン単独実行
+cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42
+```
+
+`reproduce` / `baseline` の全フラグと観測量の帯は [docs/cli.ja.md](docs/cli.ja.md)，ベースラインがフォロー辺規約にどう対応するかは [docs/architecture.ja.md](docs/architecture.ja.md) を参照．
 
 ## ライセンス
 

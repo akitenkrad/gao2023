@@ -102,6 +102,13 @@ fn build_network(cfg: &Config, ids: &[AgentId], rng: &mut SimRng) -> DiSocialNet
     }
 }
 
+/// [`build_network`] の公開ラッパ．古典ベースライン ([`crate::baseline`]) が S³ と
+/// **同一の有向網** を同一シードストリームから再構築するために用いる (構築規約は
+/// 上記 [`build_network`] と同一)．
+pub fn build_network_pub(cfg: &Config, ids: &[AgentId], rng: &mut SimRng) -> DiSocialNetwork {
+    build_network(cfg, ids, rng)
+}
+
 /// 世界状態を初期化する (有向網構築 + 属性/初期感情/初期態度割当)．
 ///
 /// 属性・初期感情・初期態度は init RNG から決定論的に割り当てる (socsim コア層)．
@@ -184,14 +191,25 @@ pub fn run_with_client(cfg: &Config, client: S3Client) -> Result<SimulationResul
     let shared_client: SharedClient = Rc::new(RefCell::new(client));
     let shared_meta: SharedMetadata = Rc::new(RefCell::new(MetadataCollector::new()));
 
+    // Perception メカニズム: `--llm-perception` 有効時は SocialContagion と同一の
+    // 共有クライアント・キャッシュで LLM 駆動選択を行う (既定は規則ベースで bit 決定論的)．
+    let perception: LLMPerceptionMechanism = if cfg.llm_perception {
+        LLMPerceptionMechanism::with_llm(
+            cfg.top_k,
+            Rc::clone(&shared_client),
+            Rc::clone(&shared_meta),
+            cfg.llm.clone(),
+            DEFAULT_TOPIC.to_string(),
+        )
+    } else {
+        LLMPerceptionMechanism::new(cfg.top_k, false)
+    };
+
     let mut sim = SimulationBuilder::new(world)
         .scheduler(Box::new(RandomActivationScheduler))
         .seed(derive_seed(root, &[RNG_ENGINE]))
         .add_mechanism(Box::new(NetworkInitMechanism))
-        .add_mechanism(Box::new(LLMPerceptionMechanism::new(
-            cfg.top_k,
-            cfg.llm_perception,
-        )))
+        .add_mechanism(Box::new(perception))
         .add_mechanism(Box::new(SocialContagionMechanism::new(
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),

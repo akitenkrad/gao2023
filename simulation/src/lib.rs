@@ -15,6 +15,7 @@
 //! 生成) は socsim の bit 再現性の **外側** にあり，`socsim-llm` のキャッシュ +
 //! `temperature=0` + `seed` 固定で擬似決定論化する．詳細は `crate::llm` を参照．
 
+pub mod baseline;
 pub mod config;
 pub mod llm;
 pub mod mechanisms;
@@ -22,5 +23,6 @@ pub mod metrics;
 pub mod parse;
 pub mod perception;
 pub mod prompts;
+pub mod reproduce;
 pub mod simulation;
 pub mod world;

@@ -1,6 +1,6 @@
 # CLI
 
-Rust バイナリ `s3` には 2 つのサブコマンドがある: `run` (単一実行) と `sweep` (network × population のグリッド)．Phase 3 の `reproduce` は未実装．
+Rust バイナリ `s3` には 4 つのサブコマンドがある: `run` (単一実行)，`sweep` (network × population のグリッド)，`reproduce` (observed-vs-paper 照合 + 古典ベースライン比較の一括再現)，`baseline` (古典的拡散・意見ダイナミクスのベースライン単独実行)．
 
 ## LLM 環境変数
 
@@ -32,7 +32,7 @@ cargo run --release -- run [OPTIONS]
 | `--m <M>` | `3` | Barabási–Albert 新規ノードあたり結合数． |
 | `--rounds <T>` | `20` | 伝播ラウンド数 (= engine tick)． |
 | `--top-k <K>` | `3` | Perception で選ぶ重要メッセージ件数． |
-| `--llm-perception` | off | LLM 駆動 Perception を使う (拡張スタブ; 規則ベースにフォールバック)． |
+| `--llm-perception` | off | LLM 駆動 Perception を使う: 候補メッセージを LLM に列挙提示し，関連順の番号列を受け取る (`prompts::perception_prompt`)．LLM が有効な番号を返さなければ規則ベーススコアへフォールバックする．off のとき規則ベース経路は Perception の LLM 呼び出し 0 回でフラグ追加前と bit 等価． |
 | `--seed-posters <N>` | `3` | round 0 で必ず投稿するエージェント数 (カスケードの種)． |
 | `--tol <TOL>` | `1e-9` | positive 態度割合の round 間変化に対する収束しきい値． |
 | `--seed <SEED>` | random | コア層 seed (socsim のみ支配; LLM 層はキャッシュ決定論)． |
@@ -88,6 +88,88 @@ cargo run --release -- sweep \
     --network er,ws,ba \
     --population-values 50,100,200 \
     --rounds 20 --runs 3 --seed 42
+```
+
+## `reproduce`
+
+S³ を 1 回実行して headline 伝播観測量を計算し，論文の定性帯と照合 (PASS / off) したうえで，**同一の有向網・同一シード**で 4 つの古典ベースライン (LT / IC / Voter / DeGroot) を実行して比較する．
+
+```bash
+cargo run --release -- reproduce [OPTIONS]
+```
+
+| フラグ | 既定 | 意味 |
+|---|---|---|
+| `--network <er\|ws\|ba>` | `ba` | ネットワーク種別． |
+| `--population <N>` | `200` | エージェント数． |
+| `--p / --m` | `0.05` / `3` | ER 確率 / BA 結合数． |
+| `--rounds <T>` | `20` | 伝播ラウンド数． |
+| `--top-k <K>` | `3` | Perception top-K． |
+| `--seed-posters <N>` | `3` | round 0 投稿者数 (ベースラインの種集合と同一)． |
+| `--llm-perception` | off | S³ 実行で LLM 駆動 Perception を使う． |
+| `--seed <SEED>` | `42` | コア層 seed (S³ とベースラインで共有)． |
+| `--tol <TOL>` | `1e-12` | 収束しきい値 (reproduce は既定で早期停止しない)． |
+| `--mock` | off | S³ を scripted オフラインクライアントで実行 (live LLM 不要; サンドボックス / CI 用)． |
+| `--quick` | off | スモーク (population/rounds を抑える)． |
+| `--temperature / --llm-seed / --cache-path` | `run` と同じ | LLM 設定 (live のみ; `--mock` は in-memory キャッシュ)． |
+| `--lt-theta <θ>` | `0.3` | Linear Threshold の一様しきい値． |
+| `--ic-p <p>` | `0.15` | Independent Cascade の 1 辺感染確率． |
+| `--degroot-self-weight <w>` | `0.5` | DeGroot の自己重み． |
+| `--output-dir <DIR>` | `results` | 出力ベースディレクトリ． |
+
+観測量と定性帯:
+
+| 指標 | 向き | 帯 | 意味 |
+|---|---|---|---|
+| `attitude_rise` | `>=` | `0.05` | positive 態度割合の `t=end − t=0`． |
+| `cascade_growth_ratio` | `>=` | `1.5` | カスケード規模 `end / initial`． |
+| `behavior_adoption_final` | `>=` | `0.05` | 終端の repost/post 割合． |
+| `emotion_msed` | `<=` | `0.20` | 終端感情分布と論文参照分布の平均二乗誤差 (MSED 代理)． |
+| `attitude_corr` | `>=` | `0.30` | 態度時系列と単調増加ランプの Pearson 相関 (Cor 代理)． |
+
+ローカルモデルは論文の GPT と異なるため，目標は **定性的** (傾向・符号) であり論文の絶対値ではない．
+
+出力は `results/reproduce_{timestamp}/` へ:
+
+- `reproduce_summary.json` — observed-vs-paper チェック (`observed`/`paper`/`direction`/`pass`)，PASS 数，S³ 最終割合，4 ベースライン比較．
+- `s3_metrics.csv` (および `metrics.csv`) — S³ の round 別集団指標．
+- `baseline_{lt,ic,voter,degroot}.csv` — 各ベースラインの round 別指標 (`t`, `active_frac`, `mean_opinion`, `cumulative_reached`)．
+- `config.json` — S³ 設定．
+- `figures/` — `uv run s3-tools reproduce` が生成．
+
+### 実行例 (オフライン)
+
+```bash
+cargo run --release -- reproduce --mock --quick --seed 42
+uv run s3-tools reproduce --results-dir results/latest
+```
+
+## `baseline`
+
+S³ と同一の有向フォローグラフ上で，古典的拡散・意見ダイナミクスを単独実行する (LLM 呼び出し 0 回・bit 決定論的)．
+
+```bash
+cargo run --release -- baseline --model <lt|ic|voter|degroot> [OPTIONS]
+```
+
+| モデル | ダイナミクス |
+|---|---|
+| `lt` | Linear Threshold (Granovetter 1978 / KKT 2003): フォロー先のアクティブ割合が θ に達するとアクティブ化 (進行性)． |
+| `ic` | Independent Cascade (KKT 2003): 新規アクティブノードが各フォロワを確率 `p` で 1 回感染試行 (進行性)． |
+| `voter` | Voter model (Clifford–Sudbury 1973): 毎 round ランダムなフォロー先の二値意見をコピー (非進行性)． |
+| `degroot` | DeGroot (1974): フォロー先意見の平均へ連続意見を更新する線形合意． |
+
+| フラグ | 既定 | 意味 |
+|---|---|---|
+| `--model <...>` | `lt` | ベースラインモデル． |
+| `--network / --population / --p / --m / --rounds / --seed-posters / --seed / --tol` | `reproduce` と同じ | トポロジ・実行パラメータ (同一 seed で S³ と同一網)． |
+| `--lt-theta / --ic-p / --degroot-self-weight` | `0.3` / `0.15` / `0.5` | モデルパラメータ． |
+| `--output-dir <DIR>` | `results` | 出力ベースディレクトリ． |
+
+出力は `results/baseline_{model}_{timestamp}/` へ: `baseline_{model}.csv` と `config.json`．
+
+```bash
+cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42
 ```
 
 ---

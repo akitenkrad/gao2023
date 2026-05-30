@@ -60,9 +60,20 @@ uv run s3-tools visualize
 - [Visualization](docs/visualization.md) — the Python `s3-tools` and how to interpret the outputs.
 - [Architecture](docs/architecture.md) — repository structure, the directed follow-graph, the two-layer determinism, the socsim/`socsim-llm` framework, the mechanisms, the metrics, and references.
 
-## Scope
+## Reproduction & classical baselines
 
-This repository currently implements **Phase 1** (the core directed-network LLM emotion/attitude/behavior contagion model, the two-layer LLM client with Ollama→OpenAI fallback + caching, the `run` subcommand, and population-level metrics) and **Phase 2** (the `sweep` over network × population, plus the Python `visualize` / `visualize-sweep` / `show-experiment-settings` tools). A one-shot paper reproduction (`reproduce`, Table 4/5 with real-data MSED / Cor alignment and LT / IC / Voter / DeGroot baselines) and an LLM-driven perception stage are left as future work (Phase 3); clean extension points are kept throughout.
+`reproduce` runs S³ once and checks its headline propagation observables against the paper's qualitative bands (attitude rise, cascade growth, behavior adoption, an emotion-distribution MSED proxy, and a Pearson correlation proxy of the attitude time series), writing `reproduce_summary.json` with PASS / off verdicts. For comparison it runs four classical diffusion / opinion-dynamics baselines — **Linear Threshold (LT)**, **Independent Cascade (IC)**, **Voter** and **DeGroot** — on the same directed follow-graph and seed (zero LLM calls, bit-deterministic), and `s3-tools reproduce` overlays them against the LLM-driven S³ curves. The `--llm-perception` flag turns the perception step into a real LLM call (the LLM ranks the candidate messages); the default rule-based path makes zero perception calls. Because the local model differs from the paper's GPT, the reproduction targets are qualitative.
+
+```bash
+# Offline reproduction (no live LLM) + figures
+cargo run --release -- reproduce --mock --quick --seed 42
+uv run s3-tools reproduce --results-dir results/latest
+
+# A single classical baseline on the same directed graph
+cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42
+```
+
+See [docs/cli.md](docs/cli.md) for the full `reproduce` / `baseline` flags and the observable bands, and [docs/architecture.md](docs/architecture.md) for how the baselines map onto the follow-edge convention.
 
 ## License
 

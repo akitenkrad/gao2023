@@ -58,10 +58,50 @@ pub fn contagion_prompt(agent: &AgentState, topic: &str, selected: &[Message]) -
     )
 }
 
+/// LLM 駆動 Perception プロンプト: inbox の候補メッセージを列挙し，自分にとって
+/// 重要な順に上位 K 件の **番号** を選ばせる (論文 §3 個人レベルの関連度判断を LLM
+/// に委ねる経路)．`--llm-perception` 有効時に [`crate::mechanisms::LLMPerceptionMechanism`]
+/// が用いる (既定は規則ベース [`crate::perception::select_top_k`])．
+///
+/// 末尾で «カンマ区切りの 1 始まり番号列» の出力を厳密に要求し，[`crate::parse`]
+/// 系の番号抽出 (`crate::mechanisms` 内) を成立させる．候補が空のときは呼ばれない．
+pub fn perception_prompt(
+    agent: &AgentState,
+    topic: &str,
+    candidates: &[Message],
+    k: usize,
+) -> String {
+    let topic_h = topic.replace('_', " ");
+    let listing = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let kind = if m.is_repost { "reposted" } else { "posted" };
+            let body = m.content.replace(['\n', '\r'], " ");
+            format!("{}. (user {} {kind}) \"{}\"", i + 1, m.author.0, body)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You are a social-media user. Profile: {profile}.\n\
+         Topic under discussion: {topic_h}.\n\
+         Below are messages currently in your feed, numbered from 1:\n{listing}\n\n\
+         Choose the {k} message(s) most worth your attention given your profile and the \
+         topic. Answer with ONLY the numbers, most important first, comma-separated, and \
+         nothing else.\n\
+         Example: 3, 1, 5",
+        profile = agent.profile.describe(),
+        topic_h = topic_h,
+        listing = listing,
+        k = k,
+    )
+}
+
 /// 初期態度の決定プロンプト (論文: 初期態度も LLM が決める)．
 ///
-/// 末尾で «negative / positive の 1 語» の出力を促す．拡張点であり，既定の
-/// 初期化は規則ベース ([`crate::simulation::init_world`]) を用いる．
+/// 末尾で «negative / positive の 1 語» の出力を促す．`--llm-perception` 有効時に
+/// [`crate::simulation::init_world`] が初期態度の決定に用いる (既定は規則ベース
+/// RNG 割当)．
 pub fn initial_attitude_prompt(agent: &AgentState, topic: &str) -> String {
     let topic_h = topic.replace('_', " ");
     format!(
