@@ -2,28 +2,30 @@
 
 Python パッケージ `s3-tools` (module `s3_tools`) が Rust シミュレーション出力を読み，図を生成する．workspace ルートで `uv sync` し，`uv run s3-tools …` でサブコマンドを呼ぶ．
 
+run ディレクトリの読み方は `runvault` パッケージ (`runvault.read`) に委ねる．`--results_dir` / `--sweep_dir` を省略すると `runvault path --latest` が返す run を対象にするので，`runvault` が PATH にある必要がある．図は run が終わった後に作るものなので run ディレクトリの**外** (`<results_root>/<experiment>/figures/<run_slug>/`) に置く — `manifest.csv` は `finish()` が確定させるため，後から `artifacts/` に足したファイルにはハッシュが付かない．
+
 ## `visualize`
 
 ```bash
-uv run s3-tools visualize [--results_dir results/latest] [--output_dir DIR] [--no-graph]
+uv run s3-tools visualize [--results_dir RUN_DIR] [--output_dir DIR] [--no-graph]
 ```
 
-`{results_dir}/metrics.csv` (と存在すれば `config.json`) を読み，`{results_dir}/figures/` へ:
+run ディレクトリの `metrics.csv` (long 形式を 1 行 1 ラウンドへ pivot) と `config.json` の `parameters` を読み，`<experiment>/figures/<run_slug>/` へ:
 
 - `propagation_timeseries.png` — 集団レベル伝播の 4 パネル図:
   - **態度** — round ごとの `attitude_positive_frac` (態度伝播曲線)．
   - **感情** — calm / moderate / intense 割合の積み上げ．
   - **行動** — round ごとの `behavior_adoption_rate` (採用曲線)．
   - **カスケード** — round ごとの `info_cascade_size` (累積到達; 単調非減少)．
-- `network_snapshot.png` — `config.json` から再構成した *近似* 有向グラフスナップショット (networkx, 最大 200 ノード)．トポロジの定性把握用で，Rust のグラフと bit 一致はしない (RNG ストリームが別)．`--no-graph` で抑止．
+- `network_snapshot.png` — `config.json` の `parameters` から再構成した *近似* 有向グラフスナップショット (networkx, 最大 200 ノード)．トポロジの定性把握用で，Rust のグラフと bit 一致はしない (RNG ストリームが別)．`--no-graph` で抑止．
 
 ## `visualize-sweep`
 
 ```bash
-uv run s3-tools visualize-sweep [--sweep_dir results/latest] [--output_dir DIR]
+uv run s3-tools visualize-sweep [--sweep_dir SWEEP_DIR] [--output_dir DIR]
 ```
 
-`{sweep_dir}/sweep_summary.csv` を読み，`{sweep_dir}/figures/` へ:
+sweep 親の子 run を集めて 1 行 1 試行の表を組み直し (`sweep_summary.csv` はもう書かれない)，`<experiment>/figures/<run_slug>/` へ:
 
 - `sweep_attitude_heatmap.png` — network × population グリッドの最終 positive 態度割合 (試行平均)．
 - `sweep_cascade_heatmap.png` — グリッドの最終情報カスケード規模．
@@ -32,18 +34,18 @@ uv run s3-tools visualize-sweep [--sweep_dir results/latest] [--output_dir DIR]
 ## `show-experiment-settings`
 
 ```bash
-uv run s3-tools show-experiment-settings [--results-dir results/latest] [--json]
+uv run s3-tools show-experiment-settings [--results-dir RUN_DIR] [--json]
 ```
 
-`config.json` (run) または `sweep_config.json` (sweep) と，存在すれば `run_metadata.json` を読み，パラメータと LLM メタデータ (モデル・endpoint・温度・seed・cache-hit 率) を整形表示する．`--json` で機械可読出力．
+run ディレクトリの `config.json` の `parameters` を読み，run か sweep かは `run.json` の `subcommand` で判別して整形表示する．LLM のモデル・provider・温度は `run.json` の `llm` ブロックから，呼び出し数と cache-hit 率は `metrics.csv` の run スコープ指標から採る．runvault 移行前の flat な `config.json` / `sweep_config.json` も読める．`--json` で機械可読出力．
 
 ## `reproduce`
 
 ```bash
-uv run s3-tools reproduce [--results_dir results/latest] [--output_dir DIR]
+uv run s3-tools reproduce [--results_dir RUN_DIR] [--output_dir DIR]
 ```
 
-`cargo run -- reproduce` が生成した再現ディレクトリ (`reproduce_summary.json` + `s3_metrics.csv` + `baseline_*.csv`) を読み，observed-vs-paper チェック (PASS / off) と古典ベースライン比較を再表示し，2 つの図を書く: `reproduce_propagation.png` (S³ の態度 / 感情 / 行動 / カスケード時系列)，`reproduce_comparison.png` (S³ vs LT / IC / Voter / DeGroot の active 割合と累積到達割合)．判定と JSON は Rust 側で計算済みで，本ツールは描画と再要約のみを行う．
+`cargo run -- reproduce` が書いた run ディレクトリ (`events.jsonl` の帯照合 + `metrics.csv` の S³ / `baseline_*` 系列) を読み，observed-vs-paper チェック (PASS / off) と古典ベースライン比較を再表示し，2 つの図を書く: `reproduce_propagation.png` (S³ の態度 / 感情 / 行動 / カスケード時系列)，`reproduce_comparison.png` (S³ vs LT / IC / Voter / DeGroot の active 割合と累積到達割合)．判定は Rust 側で計算済みで，本ツールは描画と再要約のみを行う．
 
 ## 出力の解釈
 

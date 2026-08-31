@@ -2,18 +2,22 @@
 """
 visualize.py — Gao et al. (2023) S3 LLM ソーシャルネットワーク伝播 可視化スクリプト
 
-results/latest (または --results_dir 指定先) の metrics.csv を読み，集団レベル伝播の
-時系列図を生成する:
+run ディレクトリの metrics.csv を読み，集団レベル伝播の時系列図を生成する:
 (1) 態度割合の時系列 (positive 態度を保持するエージェント割合)
 (2) 感情分布の時系列 (calm / moderate / intense の積み上げ)
 (3) 行動採用曲線 (repost/post 割合)
 (4) 情報カスケード規模 (累積到達ノード数)
-config.json があれば，network/population に応じた合成有向グラフのスナップショットも
+config.json の条件から，network/population に応じた合成有向グラフのスナップショットも
 描く (networkx; --no-graph で抑止)．
+
+--results_dir を省略すると
+`runvault path --experiment s3 --latest --subcommand run --standalone`
+が返す run ディレクトリを対象にする (`runvault` が PATH にある必要がある)．
+`--standalone` を付けるのは，sweep の子 run も subcommand=run だからである．
 
 Usage:
     uv run s3-tools visualize
-    uv run s3-tools visualize --results_dir results/20260524_153000
+    uv run s3-tools visualize --results_dir "$(runvault path --experiment s3 --latest --subcommand run --standalone)"
     uv run s3-tools visualize --output_dir out --no-graph
 
 Outputs:
@@ -25,12 +29,17 @@ Outputs:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from runvault.read import config_parameters, figures_dir, metrics_wide, runvault_path
+
+# --------------------------------------------------------------------------- #
+# runvault の experiment 名 (Rust 側 record::EXPERIMENT と揃える)
+# --------------------------------------------------------------------------- #
+EXPERIMENT = "s3"
 
 # --------------------------------------------------------------------------- #
 # 日本語フォント設定
@@ -51,26 +60,20 @@ EMOTION_COLORS = {
 }
 
 
-def load_metrics(path: str) -> pd.DataFrame:
-    """metrics.csv を読み込む．"""
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"metrics.csv が見つかりません: {path}")
-    return pd.read_csv(path)
+def with_step_column(df: pd.DataFrame) -> pd.DataFrame:
+    """時間軸の列名を `step` に揃える．
 
-
-def load_config(results_dir: str) -> dict | None:
-    path = os.path.join(results_dir, "config.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return None
+    runvault 移行前の wide な metrics.csv は時間軸を `t` と呼んでいた．このリポジトリ
+    には移行前の results/ が残っているので，読めるようにしておく．
+    """
+    return df if "step" in df.columns else df.rename(columns={"t": "step"})
 
 
 def save_propagation_timeseries(df: pd.DataFrame, out_path: str) -> None:
     """集団レベル伝播の時系列図 (4 パネル) を保存する．"""
     fig, axes = plt.subplots(2, 2, figsize=(13, 8.5), facecolor=COLOR_BG)
     fig.suptitle("Gao et al. (2023) S3 — 集団レベル伝播の時系列", fontsize=14)
-    t = df["t"]
+    t = df["step"]
 
     # (1) 態度割合
     ax = axes[0, 0]
@@ -175,14 +178,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--results_dir",
         "--results-dir",
-        default="results/latest",
-        help="Rust シミュレーションの出力ディレクトリ (default: results/latest)",
+        default=None,
+        help="run ディレクトリ (省略時は runvault path --latest --subcommand run --standalone)",
+    )
+    p.add_argument(
+        "--results_root",
+        "--results-root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    p.add_argument(
+        "--experiment",
+        default=EXPERIMENT,
+        help=f"runvault の experiment 名 (default: {EXPERIMENT})",
     )
     p.add_argument(
         "--output_dir",
         "--output-dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {results_dir}/figures)",
+        help="図の保存先ディレクトリ (default: <experiment>/figures/<run_slug>/)",
     )
     p.add_argument(
         "--no-graph",
@@ -195,8 +209,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    metrics_path = os.path.join(args.results_dir, "metrics.csv")
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.results_dir, "figures")
+    results_dir = args.results_dir
+    if results_dir is None:
+        results_dir = runvault_path(
+            args.experiment, args.results_root, subcommand="run", standalone=True
+        )
+
+    metrics_path = os.path.join(results_dir, "metrics.csv")
+    # 図は run が終わった後に作るものなので run ディレクトリの外に置く
+    # (manifest.csv は finish() が確定させるので，後から足すと食い違う)．
+    out_dir = args.output_dir or figures_dir(results_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Gao et al. (2023) S3 集団レベル伝播 可視化 ===")
@@ -205,12 +227,12 @@ def main(argv: list[str] | None = None) -> None:
     print("-----------------------------------------")
 
     print("[1/2] メトリクス時系列を保存中 ...")
-    df = load_metrics(metrics_path)
+    df = with_step_column(metrics_wide(metrics_path))
     print(f"      {len(df)} round")
     save_propagation_timeseries(df, os.path.join(out_dir, "propagation_timeseries.png"))
 
     if not args.no_graph:
-        cfg = load_config(args.results_dir)
+        cfg = config_parameters(results_dir, required=False)
         if cfg is not None:
             print("[2/2] ネットワークスナップショットを保存中 ...")
             save_network_snapshot(cfg, os.path.join(out_dir, "network_snapshot.png"))

@@ -18,7 +18,7 @@ See [CLI](cli.md) for every flag and [Visualization](visualization.md) for the f
 Re-running the **same** command with a warm `.llm_cache/` replays identical LLM responses (cache-hit ≈ 100%), so the run is fast and bit-stable in the deterministic core. Inspect what a run talked to:
 
 ```bash
-uv run s3-tools show-experiment-settings --results-dir results/latest
+uv run s3-tools show-experiment-settings
 ```
 
 See [Architecture › Two-layer determinism](architecture.md#two-layer-determinism).
@@ -53,10 +53,10 @@ Run S³ once, check its propagation observables against the paper's qualitative 
 ```bash
 # Offline (no live LLM): a scripted mock client reproduces the pipeline end-to-end
 cargo run --release -- reproduce --mock --quick --seed 42
-uv run s3-tools reproduce --results-dir results/latest
+uv run s3-tools reproduce
 ```
 
-`reproduce_summary.json` records the observed-vs-paper checks (attitude rise, cascade growth, behavior adoption, an emotion-distribution MSED proxy, an attitude Pearson-correlation proxy) with PASS / off verdicts, plus the LT / IC / Voter / DeGroot comparison. Run a single baseline on its own with `cargo run -- baseline --model {lt|ic|voter|degroot}`.
+The run directory's `events.jsonl` records the observed-vs-paper checks (attitude rise, cascade growth, behavior adoption, an emotion-distribution MSED proxy, an attitude Pearson-correlation proxy) with PASS / off verdicts, and `metrics.csv` holds the observables together with the LT / IC / Voter / DeGroot series. Run a single baseline on its own with `cargo run -- baseline --model {lt|ic|voter|degroot}`.
 
 ## 6. LLM-driven perception
 

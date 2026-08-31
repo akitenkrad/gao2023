@@ -13,7 +13,7 @@ LLM output is **outside** socsim's bit-reproducibility. The design therefore spl
 - **Deterministic socsim core** — directed-network generation, message delivery along follow edges, `RandomActivationScheduler` activation order (`ctx.rng`, ChaCha20), metrics and convergence. Given a seed this reproduces bit-for-bit.
 - **Non-deterministic LLM layer** — the joint emotion/attitude/behavior decision and the generated post content. Pseudo-determinised by `socsim-llm`'s `CachingClient` (a `hash(prompt+model)` → response cache), `temperature=0` and a fixed seed. The provider order is **Ollama first → OpenAI fallback** via `socsim-llm`'s `FallbackClient`.
 
-The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable. Each run writes `run_metadata.json` recording the model, endpoint, temperature, seed and cache-hit rate. Because the local default model (`llama3.2:latest`) differs from the paper's GPT models, reproduction targets are **qualitative** (the trend and sign of the propagation curves: attitude fractions, emotion distribution, behavior adoption and cascade growth), not the paper's exact MSED / Cor numbers.
+The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable. Each run records the model, provider and temperature in the `llm` block of runvault's `run.json`, and the call count and cache-hit rate as run-scope metrics in `metrics.csv`. Because the local default model (`llama3.2:latest`) differs from the paper's GPT models, reproduction targets are **qualitative** (the trend and sign of the propagation curves: attitude fractions, emotion distribution, behavior adoption and cascade growth), not the paper's exact MSED / Cor numbers.
 
 ## Directed follow-graph
 
@@ -42,7 +42,7 @@ uv sync
 uv run s3-tools visualize
 
 # Inspect the run's settings and LLM metadata
-uv run s3-tools show-experiment-settings --results-dir results/latest
+uv run s3-tools show-experiment-settings
 ```
 
 ### Offline smoke (no live LLM)
@@ -62,12 +62,12 @@ uv run s3-tools visualize
 
 ## Reproduction & classical baselines
 
-`reproduce` runs S³ once and checks its headline propagation observables against the paper's qualitative bands (attitude rise, cascade growth, behavior adoption, an emotion-distribution MSED proxy, and a Pearson correlation proxy of the attitude time series), writing `reproduce_summary.json` with PASS / off verdicts. For comparison it runs four classical diffusion / opinion-dynamics baselines — **Linear Threshold (LT)**, **Independent Cascade (IC)**, **Voter** and **DeGroot** — on the same directed follow-graph and seed (zero LLM calls, bit-deterministic), and `s3-tools reproduce` overlays them against the LLM-driven S³ curves. The `--llm-perception` flag turns the perception step into a real LLM call (the LLM ranks the candidate messages); the default rule-based path makes zero perception calls. Because the local model differs from the paper's GPT, the reproduction targets are qualitative.
+`reproduce` runs S³ once and checks its headline propagation observables against the paper's qualitative bands (attitude rise, cascade growth, behavior adoption, an emotion-distribution MSED proxy, and a Pearson correlation proxy of the attitude time series), writing the PASS / off verdicts to `events.jsonl`. For comparison it runs four classical diffusion / opinion-dynamics baselines — **Linear Threshold (LT)**, **Independent Cascade (IC)**, **Voter** and **DeGroot** — on the same directed follow-graph and seed (zero LLM calls, bit-deterministic), and `s3-tools reproduce` overlays them against the LLM-driven S³ curves. The `--llm-perception` flag turns the perception step into a real LLM call (the LLM ranks the candidate messages); the default rule-based path makes zero perception calls. Because the local model differs from the paper's GPT, the reproduction targets are qualitative.
 
 ```bash
 # Offline reproduction (no live LLM) + figures
 cargo run --release -- reproduce --mock --quick --seed 42
-uv run s3-tools reproduce --results-dir results/latest
+uv run s3-tools reproduce
 
 # A single classical baseline on the same directed graph
 cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42

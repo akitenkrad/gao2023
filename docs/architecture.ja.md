@@ -56,7 +56,7 @@ RNG ストリーム (コア層のみ):
 - `derive_seed(root, &[0])` → world-init RNG (有向トポロジ生成 — WS の `to_directed` の相互/方向抽選を含む — ・属性/初期感情/初期態度割当)．
 - `derive_seed(root, &[1])` → engine RNG (`RandomActivationScheduler` の毎ラウンドシャッフル)．
 
-LLM レイヤは `SimRng` の支配外であり，再現性はキャッシュに由来する．`run_metadata.json` にモデル / endpoint / 温度 / seed / cache-hit 率を記録する．
+LLM レイヤは `SimRng` の支配外であり，再現性はキャッシュに由来する．モデル / provider / 温度は runvault の `run.json` の `llm` ブロックに，呼び出し数と cache-hit 率は `metrics.csv` の run スコープ指標に記録する．
 
 ## LLM クライアント (`socsim-llm`)
 
@@ -99,7 +99,7 @@ CachingClient< Box<dyn LlmClient> >   // 型消去: FallbackClient< OllamaClient
 
 ## 一括再現と古典ベースライン
 
-`reproduce` サブコマンド (`reproduce.rs`) は S³ を 1 回実行し，指標履歴から headline 観測量 (態度上昇・カスケード成長比・終端行動採用・参照分布との感情 MSED 代理・態度時系列の Pearson Cor 代理) を導出して定性帯と照合し，PASS / off を `reproduce_summary.json` に書く．ローカルモデルは論文の GPT と異なるため目標は定性的である．
+`reproduce` サブコマンド (`reproduce.rs`) は S³ を 1 回実行し，指標履歴から headline 観測量 (態度上昇・カスケード成長比・終端行動採用・参照分布との感情 MSED 代理・態度時系列の Pearson Cor 代理) を導出して定性帯と照合し，PASS / off を `events.jsonl` に (観測量そのものは run スコープの指標として `metrics.csv` に) 書く．ローカルモデルは論文の GPT と異なるため目標は定性的である．
 
 比較のため，**同一の有向フォローグラフ・同一シード**で 4 つの古典ベースライン (`baseline.rs`) を同一の `seed_posters` 種集合から実行する (LLM 呼び出し 0 回・bit 決定論的):
 

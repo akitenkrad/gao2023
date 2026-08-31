@@ -16,11 +16,11 @@
 //!    実行し，S³ と並べて伝播の到達割合を比較する (LLM 呼び出し 0 回)．
 //! 3. 観測量を論文の定性帯と PASS / off で照合し，`reproduce_summary.json` に書く．
 //!
-//! 出力構造 (`reproduce_<ts>/`):
-//! - `s3_metrics.csv`            — S³ の round 別集団指標 (visualize 互換)．
-//! - `baseline_<model>.csv`      — 各ベースラインの round 別指標．
-//! - `reproduce_summary.json`    — observed-vs-paper + PASS/off + ベースライン比較．
-//! - `config.json`               — S³ 設定 (visualize がネットワーク描画に使う)．
+//! 出力は runvault の run ディレクトリに落とす (`crate::record` を参照):
+//! - `metrics.csv`   — S³ の round 別集団指標と，`baseline_<model>_*` の名前を持つ
+//!   各ベースラインの round 別指標．headline 観測量は step を持たない run スコープ．
+//! - `events.jsonl`  — 帯照合の判定 (`x.gao2023.check`)．
+//! - `config.json`   — 実験条件 (visualize がネットワーク描画にも使う)．
 
 use serde::Serialize;
 
@@ -214,10 +214,10 @@ pub fn build_checks(history: &[Metrics]) -> Vec<Check> {
 
 /// reproduce 一括実行の結果 (S³ 結果 + ベースライン比較 + summary)．
 pub struct ReproduceOutput {
-    /// S³ 実行結果 (CSV 書き出し用)．
+    /// S³ 実行結果 (記録用)．
     pub s3: SimulationResult,
-    /// 各ベースラインの round 別指標 (CSV 書き出し用; モデルラベル付き)．
-    pub baseline_histories: Vec<(String, Vec<crate::baseline::BaselineMetrics>)>,
+    /// 各ベースラインの実行結果 (記録用; round 別指標・収束・最終 round を含む)．
+    pub baseline_results: Vec<crate::baseline::BaselineResult>,
     /// summary．
     pub summary: ReproduceSummary,
 }
@@ -246,7 +246,7 @@ pub fn run_reproduce(
         BaselineModel::DeGroot,
     ];
     let mut baselines = Vec::new();
-    let mut baseline_histories = Vec::new();
+    let mut baseline_results = Vec::new();
     for model in models {
         let r = run_baseline(cfg, model, params);
         let bl = r.last();
@@ -257,7 +257,7 @@ pub fn run_reproduce(
             final_reached: bl.cumulative_reached,
             final_round: r.final_round,
         });
-        baseline_histories.push((model.label().to_string(), r.history));
+        baseline_results.push(r);
     }
 
     let n = cfg.population.max(1) as f64;
@@ -286,7 +286,7 @@ pub fn run_reproduce(
 
     Ok(ReproduceOutput {
         s3,
-        baseline_histories,
+        baseline_results,
         summary,
     })
 }
@@ -330,7 +330,7 @@ mod tests {
         let out = run_reproduce(&cfg(), mock_client(), true, &BaselineParams::default()).unwrap();
         // S³ + 4 ベースライン．
         assert_eq!(out.summary.baselines.len(), 4);
-        assert_eq!(out.baseline_histories.len(), 4);
+        assert_eq!(out.baseline_results.len(), 4);
         let labels: Vec<&str> = out
             .summary
             .baselines

@@ -1,9 +1,9 @@
 //! Mock 駆動のスモーク実行 (ライブ LLM 不要)．
 //!
 //! ライブ Ollama/OpenAI が使えない環境 (CI・ネットワーク遮断サンドボックス) で
-//! 出力パイプライン (metrics.csv / run_metadata.json) と Python 可視化を検証する
+//! 出力パイプライン (runvault の run ディレクトリ) と Python 可視化を検証する
 //! ための補助バイナリ．`socsim-llm::mock::ScriptedClient` で決定論的に感情/態度/
-//! 行動更新を駆動し，本番 `run` と同じ writer で結果を書き出す．
+//! 行動更新を駆動し，本番 `run` と同じ経路で結果を記録する．
 //!
 //! ```bash
 //! cargo run --release --example mock_smoke -- results
@@ -11,20 +11,20 @@
 
 use std::env;
 
-use socsim_results::{refresh_latest_symlink, timestamp, write_json};
+use runvault::{Run, RunOptions};
 
 use s3_simulation::config::Config;
 use s3_simulation::llm::wrap_client;
-use s3_simulation::simulation::{
-    ensure_output_dir, run_with_client, save_metrics, save_run_metadata,
-};
+use s3_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID};
+use s3_simulation::simulation::run_with_client;
 use socsim_llm::mock::ScriptedClient;
-use socsim_llm::PromptCache;
+use socsim_llm::{LlmClient, PromptCache};
+
+/// シードは固定 (スモークの目的は «同じ入力で同じ出力» の確認)．
+const SEED: u64 = 42;
 
 fn main() {
     let base = env::args().nth(1).unwrap_or_else(|| "results".to_string());
-    let timestamp = timestamp();
-    let output_dir = format!("{base}/{timestamp}");
 
     let cfg = Config {
         network: s3_simulation::config::NetworkKind::BarabasiAlbert,
@@ -33,8 +33,7 @@ fn main() {
         top_k: 3,
         seed_posters: 3,
         tol: 1e-12, // 収束で早期停止させない
-        seed: Some(42),
-        output_dir: output_dir.clone(),
+        seed: Some(SEED),
         ..Config::default()
     };
 
@@ -61,21 +60,33 @@ fn main() {
         )
     });
     let client = wrap_client(backend, PromptCache::in_memory());
+    let llm = record::llm_block(
+        client.inner().model(),
+        client.inner().endpoint(),
+        cfg.llm.temperature,
+    );
 
-    ensure_output_dir(&cfg.output_dir);
+    let parameters = cfg.to_run_config_json();
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "run")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&base)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(SEED)
+            .llm(llm)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
+
     let result = run_with_client(&cfg, client).expect("mock run failed");
-    save_metrics(&result.metrics_history, &cfg.output_dir);
-    save_run_metadata(&result, &cfg, &cfg.output_dir);
-
-    // config.json (socsim_results::write_json に委譲)．
-    let cfg_path = format!("{}/config.json", cfg.output_dir);
-    write_json(&cfg.to_run_config_json(), &cfg_path).unwrap();
-
-    // latest symlink (socsim_results に委譲)．
-    let _ = refresh_latest_symlink(&base, &timestamp);
+    record::log_simulation(&mut rv, &result);
 
     let last = result.metrics_history.last().unwrap();
-    println!("mock smoke wrote: {output_dir}");
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("mock smoke wrote: {}", dir.display());
     println!(
         "final positive_frac={:.3} emotion(calm/mod/int)={:.2}/{:.2}/{:.2} adoption={:.3} cascade={} rounds={}",
         last.attitude_positive_frac,

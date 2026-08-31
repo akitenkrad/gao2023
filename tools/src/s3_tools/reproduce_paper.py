@@ -2,19 +2,23 @@
 """
 reproduce_paper.py — Gao et al. (2023) S3 一括再現の集計・可視化スクリプト
 
-Rust の `s3 reproduce` が書き出した再現ディレクトリ (reproduce_<ts>/) を読み，
+Rust の `s3 reproduce` が書いた run ディレクトリを読み，
 
-  1. reproduce_summary.json の observed-vs-paper チェックを PASS / off で表示する
+  1. events.jsonl の帯照合 (`x.gao2023.check`) を PASS / off で表示する
      (態度上昇・カスケード成長・行動採用・感情分布 MSED・態度時系列相関)，
-  2. s3_metrics.csv (S³) と baseline_<model>.csv (LT/IC/Voter/DeGroot) を重ねて，
-     LLM 駆動 S³ と古典拡散ベースラインの伝播曲線を比較する図を生成する．
+  2. metrics.csv の S³ 系列と `baseline_<model>_*` 系列 (LT/IC/Voter/DeGroot) を
+     重ねて，LLM 駆動 S³ と古典拡散ベースラインの伝播曲線を比較する図を生成する．
 
-Rust 側で帯照合・JSON は確定済みなので，本ツールは図の生成と要約の再表示に専念する
+Rust 側で帯照合は確定済みなので，本ツールは図の生成と要約の再表示に専念する
 (再計算しない)．
+
+--results_dir を省略すると
+`runvault path --experiment s3 --latest --subcommand reproduce`
+が返す run ディレクトリを対象にする (`runvault` が PATH にある必要がある)．
 
 Usage:
     uv run s3-tools reproduce
-    uv run s3-tools reproduce --results_dir results/reproduce_20260530_120000
+    uv run s3-tools reproduce --results_dir "$(runvault path --experiment s3 --latest --subcommand reproduce)"
     uv run s3-tools reproduce --output_dir out
 
 Outputs:
@@ -26,12 +30,26 @@ Outputs:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from runvault.read import (
+    config_parameters,
+    events_table,
+    figures_dir,
+    load_run_meta,
+    metrics_wide,
+    run_scope_metrics,
+    runvault_path,
+)
+
+# --------------------------------------------------------------------------- #
+# runvault 側の名前 (Rust 側 record.rs と揃える)
+# --------------------------------------------------------------------------- #
+EXPERIMENT = "s3"
+CHECK_EVENT = "x.gao2023.check"
 
 # --------------------------------------------------------------------------- #
 # 日本語フォント設定
@@ -58,21 +76,45 @@ BASELINE_LABELS = {
 }
 BASELINE_ORDER = ["lt", "ic", "voter", "degroot"]
 
+# S³ 本体の round 別系列 (`baseline_*` はベースライン側)．
+S3_SERIES = [
+    "attitude_positive_frac",
+    "emotion_calm",
+    "emotion_moderate",
+    "emotion_intense",
+    "behavior_adoption_rate",
+    "info_cascade_size",
+]
+# ベースライン 1 本の round 別系列．
+BASELINE_SERIES = ["active_frac", "mean_opinion", "cumulative_reached"]
 
-def load_summary(results_dir: str) -> dict:
-    path = os.path.join(results_dir, "reproduce_summary.json")
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"reproduce_summary.json が見つかりません: {path}\n"
-            f"  まず `cargo run --release -- reproduce --mock` を実行してください．"
-        )
-    with open(path) as f:
-        return json.load(f)
+
+def _series(wide: pd.DataFrame, columns: dict[str, str]) -> pd.DataFrame | None:
+    """long → wide に開いた表から系列だけを切り出す．
+
+    S³ とベースラインは 1 つの run に同居し，停止するラウンドが違う．pivot は
+    足りない側を NaN で埋めるので，切り出した後に落とす — 描かない点と «値が 0» を
+    取り違えないため．
+    """
+    if not set(columns) <= set(wide.columns):
+        return None
+    df = (
+        wide[["step", *columns]]
+        .rename(columns={"step": "t", **columns})
+        .dropna()
+        .reset_index(drop=True)
+    )
+    return df if not df.empty else None
 
 
-def _read_csv(results_dir: str, name: str) -> pd.DataFrame | None:
-    path = os.path.join(results_dir, name)
-    return pd.read_csv(path) if os.path.exists(path) else None
+def s3_series(wide: pd.DataFrame) -> pd.DataFrame | None:
+    """S³ 本体の round 別系列．"""
+    return _series(wide, {name: name for name in S3_SERIES})
+
+
+def baseline_series(wide: pd.DataFrame, model: str) -> pd.DataFrame | None:
+    """ベースライン 1 本の round 別系列 (接頭辞を外した列名にして返す)．"""
+    return _series(wide, {f"baseline_{model}_{name}": name for name in BASELINE_SERIES})
 
 
 def save_propagation(s3: pd.DataFrame, out_path: str) -> None:
@@ -191,34 +233,67 @@ def save_comparison(
     print(f"  保存: {out_path}")
 
 
-def print_summary(summary: dict) -> None:
+def print_summary(
+    params: dict,
+    meta: dict,
+    scoped: dict[str, float],
+    checks: pd.DataFrame,
+    s3: pd.DataFrame | None,
+    baselines: dict[str, pd.DataFrame],
+) -> None:
     print("=" * 70)
     print("Gao et al. (2023) S3 — 一括再現 (observed-vs-paper)")
     print("=" * 70)
-    print(f"setup: {summary['setup']}")
-    print(f"LLM: model={summary['llm_model']} mock={summary['mock']} "
-          f"cache-hit={summary['cache_hit_rate'] * 100:.1f}%\n")
+    setup = " ".join(
+        f"{key}={params.get(key)}"
+        for key in (
+            "network",
+            "population",
+            "rounds",
+            "top_k",
+            "seed_posters",
+            "seed",
+            "llm_perception",
+        )
+    )
+    print(f"setup: {setup}")
+    model = (meta.get("llm") or {}).get("model_snapshot", "-")
+    print(
+        f"LLM: model={model} mock={params.get('mock')} "
+        f"cache-hit={scoped.get('llm_cache_hit_rate', 0.0) * 100:.1f}%\n"
+    )
     print("[1] headline 伝播チェック:")
-    for c in summary["checks"]:
+    # `pass` は予約語なので itertuples では列名が潰れる．行は dict で取る．
+    for _, c in checks.iterrows():
         verdict = "PASS" if c["pass"] else "off"
         print(
             f"  {c['indicator']:<24} = {c['observed']:>8.3f}   "
             f"({c['direction']} {c['paper']:.2f}: {verdict})"
         )
+    passed = int(scoped.get("checks_passed", 0))
+    total = int(scoped.get("checks_total", len(checks)))
     print(
-        f"  → {summary['passed']}/{summary['total']} PASS "
-        f"({'all PASS' if summary['all_pass'] else 'review'})\n"
+        f"  → {passed}/{total} PASS "
+        f"({'all PASS' if passed == total else 'review'})\n"
     )
     print("[2] 古典ベースライン比較 (同一網・同一シード):")
-    print(
-        f"  S3 (LLM)  最終 active={summary['s3_final_active_frac']:.3f} | "
-        f"到達割合={summary['s3_final_reached_frac']:.3f}"
-    )
-    for b in summary["baselines"]:
+    if s3 is not None:
+        n = max(int(params.get("population", 1)), 1)
+        last = s3.iloc[-1]
         print(
-            f"  {b['model']:<8}  最終 active={b['final_active_frac']:.3f} | "
-            f"平均意見={b['final_mean_opinion']:.3f} | 到達={b['final_reached']} | "
-            f"round={b['final_round']}"
+            f"  S3 (LLM)  最終 active={last['attitude_positive_frac']:.3f} | "
+            f"到達割合={last['info_cascade_size'] / n:.3f}"
+        )
+    for model_label in BASELINE_ORDER:
+        df = baselines.get(model_label)
+        if df is None:
+            continue
+        last = df.iloc[-1]
+        final_round = int(scoped.get(f"baseline_{model_label}_final_round", last["t"]))
+        print(
+            f"  {model_label:<8}  最終 active={last['active_frac']:.3f} | "
+            f"平均意見={last['mean_opinion']:.3f} | "
+            f"到達={int(last['cumulative_reached'])} | round={final_round}"
         )
     print("=" * 70)
 
@@ -231,62 +306,78 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--results_dir",
         "--results-dir",
-        default="results/latest",
-        help="`s3 reproduce` の出力ディレクトリ (default: results/latest)",
+        default=None,
+        help="`s3 reproduce` の run ディレクトリ (省略時は runvault path --latest --subcommand reproduce)",
+    )
+    p.add_argument(
+        "--results_root",
+        "--results-root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    p.add_argument(
+        "--experiment",
+        default=EXPERIMENT,
+        help=f"runvault の experiment 名 (default: {EXPERIMENT})",
     )
     p.add_argument(
         "--output_dir",
         "--output-dir",
         default=None,
-        help="図の保存先 (default: {results_dir}/figures)",
+        help="図の保存先 (default: <experiment>/figures/<run_slug>/)",
     )
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
     results_dir = args.results_dir
-    out_dir = args.output_dir or os.path.join(results_dir, "figures")
-    os.makedirs(out_dir, exist_ok=True)
+    if results_dir is None:
+        results_dir = runvault_path(
+            args.experiment, args.results_root, subcommand="reproduce"
+        )
 
     try:
-        summary = load_summary(results_dir)
+        checks = events_table(results_dir, kind=CHECK_EVENT)
+        params = config_parameters(results_dir)
+        meta = load_run_meta(results_dir)
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
+        print(
+            "  まず `cargo run --release -- reproduce --mock` を実行してください．",
+            file=sys.stderr,
+        )
         return 1
 
-    print_summary(summary)
+    scoped = run_scope_metrics(results_dir)
+    wide = metrics_wide(os.path.join(results_dir, "metrics.csv"))
+    s3 = s3_series(wide)
+    baselines = {m: baseline_series(wide, m) for m in BASELINE_ORDER}
+    baselines = {m: df for m, df in baselines.items() if df is not None}
 
-    s3 = _read_csv(results_dir, "s3_metrics.csv")
-    if s3 is None:
-        s3 = _read_csv(results_dir, "metrics.csv")
+    print_summary(params, meta, scoped, checks, s3, baselines)
+
     if s3 is None:
         print(
-            f"warning: s3_metrics.csv が無いため図を生成しません ({results_dir})",
+            f"warning: S³ の round 別系列が無いため図を生成しません ({results_dir})",
             file=sys.stderr,
         )
         return 0
 
-    baselines = {
-        m: _read_csv(results_dir, f"baseline_{m}.csv") for m in BASELINE_ORDER
-    }
-    baselines = {m: df for m, df in baselines.items() if df is not None}
-
-    # population は config.json から (図の正規化用)．
-    population = 1
-    cfg_path = os.path.join(results_dir, "config.json")
-    if os.path.exists(cfg_path):
-        with open(cfg_path) as f:
-            population = int(json.load(f).get("population", 1))
+    # 図は run が終わった後に作るものなので run ディレクトリの外に置く．
+    out_dir = args.output_dir or figures_dir(results_dir)
+    os.makedirs(out_dir, exist_ok=True)
 
     print("\n図を生成中 ...")
     save_propagation(s3, os.path.join(out_dir, "reproduce_propagation.png"))
     if baselines:
+        population = max(int(params.get("population", 1)), 1)
         save_comparison(
             s3, baselines, population, os.path.join(out_dir, "reproduce_comparison.png")
         )
     else:
-        print("  (baseline_*.csv が無いため比較図はスキップ)")
+        print("  (ベースラインの系列が無いため比較図はスキップ)")
 
     print("-" * 70)
     print("完了．出力ファイル一覧:")

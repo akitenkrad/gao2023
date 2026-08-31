@@ -2,26 +2,31 @@
 //! Model-Empowered Agents" — 再現実験の CLI エントリポイント．
 //!
 //! `run`       : 単一設定で有向網上の LLM 駆動 感情/態度/行動伝播を実行する．
-//! `sweep`     : ネットワーク種別 × 人口規模 を走査し，最終集団指標を
-//!               `sweep_summary.csv` に集計する．
+//! `sweep`     : ネットワーク種別 × 人口規模 を走査する．親 run 1 本 + 条件ごとの
+//!               子 run として記録する．
 //! `reproduce` : S³ の headline 伝播を一括再現し，observed-vs-paper 照合
 //!               (態度上昇・カスケード成長・行動採用・感情分布 MSED・態度時系列相関)
 //!               と古典ベースライン (LT/IC/Voter/DeGroot) 比較を出力する．
 //! `baseline`  : 古典的拡散・意見ダイナミクスのベースラインを単独で実行する．
+//!
+//! サブコマンド 1 回が runvault の run 1 本になる．出力の置き場と同一性 (run ディレ
+//! クトリ・`config.json`・`metrics.csv`・`events.jsonl`) は runvault が持つので，
+//! ここではタイムスタンプ付きディレクトリも `latest` symlink も作らない．
 
 use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
+use runvault::{Lineage, Run, RunOptions};
 
 use s3_simulation::baseline::{parse_baseline, run_baseline, BaselineParams};
-use s3_simulation::config::{parse_network, Config, LlmSettings, NetworkKind};
+use s3_simulation::config::{parse_network, Config, LlmSettings, NetworkKind, RunConfigJson};
 use s3_simulation::llm::{build_live_client, wrap_client, S3Client};
+use s3_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID};
 use s3_simulation::reproduce::run_reproduce;
-use s3_simulation::simulation::{ensure_output_dir, run, save_metrics, save_run_metadata};
+use s3_simulation::simulation::run_with_client;
 use socsim_llm::mock::ScriptedClient;
-use socsim_llm::PromptCache;
+use socsim_llm::{LlmClient, PromptCache};
 
 // ---------------------------------------------------------------------------
 // CLI 定義
@@ -380,28 +385,16 @@ fn scripted_mock_client() -> S3Client {
     wrap_client(backend, PromptCache::in_memory())
 }
 
-/// `sweep_summary.csv` の 1 行．
-#[derive(serde::Serialize)]
+/// sweep のコンソールサマリ 1 行 (ファイルには書かない)．
 struct SweepRow {
     network: String,
-    population: usize,
-    run: usize,
-    seed: u64,
-    converged: bool,
-    final_round: usize,
     final_attitude_positive_frac: f64,
-    final_emotion_calm: f64,
-    final_emotion_moderate: f64,
-    final_emotion_intense: f64,
-    final_behavior_adoption_rate: f64,
     final_info_cascade_size: usize,
-    cache_hit_rate: f64,
 }
 
-/// `sweep_config.json` の構造体．
+/// sweep 親の `config.json` に載る格子の定義．
 #[derive(serde::Serialize)]
 struct SweepConfigJson {
-    command: &'static str,
     network_values: Vec<String>,
     population_values: Vec<usize>,
     rounds: usize,
@@ -412,6 +405,45 @@ struct SweepConfigJson {
     seed: u64,
     llm_temperature: f32,
     llm_seed: u64,
+}
+
+/// reproduce 親の `config.json` に載る条件．
+///
+/// S³ の条件に，一括再現でしか効かないもの (`mock` / `quick` と古典ベースラインの
+/// パラメータ) を足したもの．どれも数値を変える条件なので `parameters` に置く．
+#[derive(serde::Serialize)]
+struct ReproduceConfigJson {
+    #[serde(flatten)]
+    s3: RunConfigJson,
+    mock: bool,
+    quick: bool,
+    lt_theta: f64,
+    ic_p: f64,
+    degroot_self_weight: f64,
+}
+
+/// baseline の `config.json` に載る条件．
+///
+/// LLM を一度も呼ばないので `top_k` / `llm_perception` / LLM 設定は条件に入れない．
+/// 網の生成には効くので `ws_*` は `Config::default()` の値をそのまま書く．
+#[derive(serde::Serialize)]
+struct BaselineConfigJson {
+    model: String,
+    network: String,
+    population: usize,
+    er_p: f64,
+    ws_k: usize,
+    ws_beta: f64,
+    ws_p_mutual: f64,
+    ba_m: usize,
+    rounds: usize,
+    seed_posters: usize,
+    tol: f64,
+    seed: u64,
+    lt_theta: f64,
+    ic_p: f64,
+    degroot_self_weight: f64,
+    binary_threshold: f64,
 }
 
 /// 派生シードのラベルに使う文字列ハッシュ (explicit identity)．
@@ -439,8 +471,9 @@ fn split_csv(s: &str) -> Vec<String> {
 fn cmd_run(args: RunArgs) {
     let network = parse_network(&args.network).unwrap_or_else(|e| panic!("{}", e));
 
-    let timestamp = timestamp();
-    let output_dir = format!("{}/{}", args.output_dir, timestamp);
+    // シードを実体化してから記録する．--seed 省略時にシミュレーション側で
+    // rand::random に落とすと，実際に使われたシードがどこにも残らない．
+    let seed = args.seed.unwrap_or_else(rand::random::<u64>);
 
     let cfg = Config {
         network,
@@ -455,19 +488,42 @@ fn cmd_run(args: RunArgs) {
         llm_perception: args.llm_perception,
         seed_posters: args.seed_posters,
         tol: args.tol,
-        seed: args.seed,
+        seed: Some(seed),
         llm: LlmSettings {
             temperature: args.temperature,
             seed: args.llm_seed,
             cache_path: Some(args.cache_path.clone()),
         },
-        output_dir: output_dir.clone(),
     };
 
     if let Some(parent) = Path::new(&args.cache_path).parent() {
         let _ = fs::create_dir_all(parent);
     }
-    ensure_output_dir(&cfg.output_dir);
+
+    // LLM クライアントは run を開始する前に組む．`llm` ブロックに書くモデル名と
+    // endpoint は，実際に応答するバックエンドから採らないと意味を持たない．
+    let client =
+        build_live_client(&cfg.llm).unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"));
+    let llm = record::llm_block(
+        client.inner().model(),
+        client.inner().endpoint(),
+        cfg.llm.temperature,
+    );
+
+    let parameters = cfg.to_run_config_json();
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "run")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(seed)
+            .llm(llm)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
 
     println!("=== Gao et al. (2023) S3 LLM ソーシャルネットワーク伝播 再現実験 ===");
     println!(
@@ -479,25 +535,14 @@ fn cmd_run(args: RunArgs) {
         cfg.seed_posters,
     );
     println!(
-        "seed: {:?} | LLM: temp={} llm_seed={} cache={}",
-        cfg.seed, cfg.llm.temperature, cfg.llm.seed, args.cache_path
+        "seed: {} | LLM: temp={} llm_seed={} cache={}",
+        seed, cfg.llm.temperature, cfg.llm.seed, args.cache_path
     );
-    println!("出力先: {}", cfg.output_dir);
+    println!("出力先: {}", rv.dir().display());
     println!("-----------------------------------------------------------------");
 
-    let result = run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
-
-    save_metrics(&result.metrics_history, &cfg.output_dir);
-    save_run_metadata(&result, &cfg, &cfg.output_dir);
-
-    // config.json (pretty-print JSON; socsim_results::write_json に委譲)．
-    {
-        let path = format!("{}/config.json", cfg.output_dir);
-        write_json(&cfg.to_run_config_json(), &path).expect("config.json の書き込みに失敗");
-    }
-
-    // latest シンボリックリンクを再作成する (best-effort; 従来同様エラーは無視)．
-    let _ = refresh_latest_symlink(&args.output_dir, &timestamp);
+    let result = run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    record::log_simulation(&mut rv, &result);
 
     let last = result.metrics_history.last().unwrap();
     println!(
@@ -520,9 +565,10 @@ fn cmd_run(args: RunArgs) {
         result.metadata.cache_hit_rate() * 100.0,
         result.llm_model,
     );
-    println!("メトリクス → {}/metrics.csv", cfg.output_dir);
-    println!("LLM メタ   → {}/run_metadata.json", cfg.output_dir);
-    println!("設定       → {}/config.json", cfg.output_dir);
+
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("メトリクス → {}/metrics.csv", dir.display());
+    println!("設定       → {}/config.json", dir.display());
 }
 
 // ---------------------------------------------------------------------------
@@ -542,14 +588,46 @@ fn cmd_sweep(args: SweepArgs) {
         })
         .collect();
 
-    let timestamp = timestamp();
-    let sweep_dir = format!("{}/{}_sweep", args.output_dir, timestamp);
-    fs::create_dir_all(&sweep_dir).expect("sweep ディレクトリの作成に失敗");
     if let Some(parent) = Path::new(&args.cache_path).parent() {
         let _ = fs::create_dir_all(parent);
     }
 
     let n_total = networks.len() * populations.len() * args.runs;
+
+    // 親 run: 格子の定義そのものを parameters に持つ．個別条件の指標は書かない．
+    // 親は単一の master_seed を持たない (条件ごとの子が派生シードをそれぞれ持つ)．
+    // base seed は /parameters.seed と seed_pointers 経由で execution_hash に残る．
+    // sweep_id は runvault が親の run_slug で埋める．
+    let sweep_parameters = SweepConfigJson {
+        network_values: split_csv(&args.network),
+        population_values: populations.clone(),
+        rounds: args.rounds,
+        top_k: args.top_k,
+        seed_posters: args.seed_posters,
+        runs: args.runs,
+        tol: args.tol,
+        seed: args.seed,
+        llm_temperature: args.temperature,
+        llm_seed: args.llm_seed,
+    };
+    let parent = Run::start(
+        RunOptions::new(EXPERIMENT, "sweep")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&sweep_parameters)
+            .expect("runvault: sweep の parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .sweep_parent()
+            .replication(record::replication()),
+    )
+    .expect("runvault: sweep 親 run の開始に失敗");
+
+    let sweep_id = parent
+        .sweep_id()
+        .expect("runvault: sweep 親に sweep_id がありません")
+        .to_string();
+    let parent_run_uid = parent.run_uid().to_string();
 
     println!("=== Gao et al. (2023) S3 パラメータスイープ (network × population) ===");
     println!(
@@ -559,7 +637,7 @@ fn cmd_sweep(args: SweepArgs) {
         args.runs,
         n_total,
     );
-    println!("出力先: {}", sweep_dir);
+    println!("出力先: {}", parent.dir().display());
     println!("-----------------------------------------------------------------");
 
     let mut summary_rows: Vec<SweepRow> = Vec::with_capacity(n_total);
@@ -596,28 +674,51 @@ fn cmd_sweep(args: SweepArgs) {
                         seed: args.llm_seed,
                         cache_path: Some(args.cache_path.clone()),
                     },
-                    output_dir: sweep_dir.clone(),
                 };
 
-                let result = run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
-                let last = result.metrics_history.last().unwrap();
+                let client = build_live_client(&cfg.llm)
+                    .unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"));
+                let llm = record::llm_block(
+                    client.inner().model(),
+                    client.inner().endpoint(),
+                    cfg.llm.temperature,
+                );
 
+                // 子は «その条件の run» そのもの．master_seed は base から派生した
+                // 実際に使われるシードで，同一条件の繰り返しは replicate_index で分ける．
+                let parameters = cfg.to_run_config_json();
+                let mut child = Run::start(
+                    RunOptions::new(EXPERIMENT, "run")
+                        .repo_id(REPO_ID)
+                        .domain(DOMAIN)
+                        .results_root(&args.output_dir)
+                        .parameters(&parameters)
+                        .expect("runvault: 子 run の parameters の組み立てに失敗")
+                        .seed_pointers(["/seed"])
+                        .master_seed(seed)
+                        .replicate_index(run_idx as u64)
+                        .llm(llm)
+                        .lineage(Lineage {
+                            sweep_id: Some(sweep_id.clone()),
+                            parent_run_uid: Some(parent_run_uid.clone()),
+                            ..Default::default()
+                        })
+                        .replication(record::replication()),
+                )
+                .expect("runvault: 子 run の開始に失敗");
+
+                let result =
+                    run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+                record::log_simulation(&mut child, &result);
+
+                let last = result.metrics_history.last().unwrap();
                 summary_rows.push(SweepRow {
                     network: network.label().to_string(),
-                    population,
-                    run: run_idx,
-                    seed,
-                    converged: result.converged,
-                    final_round: result.final_round,
                     final_attitude_positive_frac: last.attitude_positive_frac,
-                    final_emotion_calm: last.emotion_calm,
-                    final_emotion_moderate: last.emotion_moderate,
-                    final_emotion_intense: last.emotion_intense,
-                    final_behavior_adoption_rate: last.behavior_adoption_rate,
                     final_info_cascade_size: last.info_cascade_size,
-                    cache_hit_rate: result.metadata.cache_hit_rate(),
                 });
 
+                child.finish().expect("runvault: 子 run の完了に失敗");
                 done += 1;
             }
             println!(
@@ -630,33 +731,6 @@ fn cmd_sweep(args: SweepArgs) {
             );
         }
     }
-
-    // sweep_summary.csv (各行を serialize; socsim_results::write_csv に委譲)．
-    {
-        let path = format!("{}/sweep_summary.csv", sweep_dir);
-        write_csv(&summary_rows, &path).expect("sweep_summary.csv の書き込みに失敗");
-    }
-
-    // sweep_config.json
-    {
-        let config_json = SweepConfigJson {
-            command: "sweep",
-            network_values: split_csv(&args.network),
-            population_values: populations.clone(),
-            rounds: args.rounds,
-            top_k: args.top_k,
-            seed_posters: args.seed_posters,
-            runs: args.runs,
-            tol: args.tol,
-            seed: args.seed,
-            llm_temperature: args.temperature,
-            llm_seed: args.llm_seed,
-        };
-        let path = format!("{}/sweep_config.json", sweep_dir);
-        write_json(&config_json, &path).expect("sweep_config.json の書き込みに失敗");
-    }
-
-    let _ = refresh_latest_symlink(&args.output_dir, &format!("{}_sweep", timestamp));
 
     println!("=================================================================");
     println!("スイープ完了: {} 実行", n_total);
@@ -681,15 +755,19 @@ fn cmd_sweep(args: SweepArgs) {
             .sum::<usize>() as f64
             / rows.len() as f64;
         println!(
-            "  {:<3} → positivē = {:.3} | cascadē = {:.1}",
+            "  {:<3} → positivē = {:.3} | cascadē = {:.1}",
             network.label(),
             avg_pos,
             avg_casc
         );
     }
+
+    let dir = parent
+        .finish()
+        .expect("runvault: sweep 親 run の完了に失敗");
     println!("-----------------------------------------------------------------");
-    println!("サマリ → {}/sweep_summary.csv", sweep_dir);
-    println!("設定   → {}/sweep_config.json", sweep_dir);
+    println!("スイープ定義 → {}/config.json", dir.display());
+    println!("各条件の指標は子 run (subcommand=run) の metrics.csv にあります");
 }
 
 // ---------------------------------------------------------------------------
@@ -705,11 +783,6 @@ fn cmd_reproduce(args: ReproduceArgs) {
     } else {
         (args.population, args.rounds)
     };
-
-    let timestamp = timestamp();
-    let output_dir = format!("{}/reproduce_{}", args.output_dir, timestamp);
-    let figures_dir = format!("{}/figures", output_dir);
-    fs::create_dir_all(&figures_dir).expect("reproduce ディレクトリの作成に失敗");
 
     let cfg = Config {
         network,
@@ -732,7 +805,6 @@ fn cmd_reproduce(args: ReproduceArgs) {
                 Some(args.cache_path.clone())
             },
         },
-        output_dir: output_dir.clone(),
         ..Config::default()
     };
 
@@ -742,6 +814,43 @@ fn cmd_reproduce(args: ReproduceArgs) {
         degroot_self_weight: args.degroot_self_weight,
         ..BaselineParams::default()
     };
+
+    // mock (オフライン) なら scripted client，live なら Ollama→OpenAI フォールバック．
+    let client = if args.mock {
+        scripted_mock_client()
+    } else {
+        if let Some(parent) = Path::new(&args.cache_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        build_live_client(&cfg.llm).unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"))
+    };
+    let llm = record::llm_block(
+        client.inner().model(),
+        client.inner().endpoint(),
+        cfg.llm.temperature,
+    );
+
+    let parameters = ReproduceConfigJson {
+        s3: cfg.to_run_config_json(),
+        mock: args.mock,
+        quick: args.quick,
+        lt_theta: params.lt_theta,
+        ic_p: params.ic_p,
+        degroot_self_weight: params.degroot_self_weight,
+    };
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "reproduce")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(args.seed)
+            .llm(llm)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
 
     println!("=== Gao et al. (2023) S³ 一括再現 (reproduce) ===");
     println!(
@@ -754,51 +863,27 @@ fn cmd_reproduce(args: ReproduceArgs) {
         args.quick,
         cfg.llm_perception,
     );
-    println!("出力先: {}", output_dir);
+    println!("出力先: {}", rv.dir().display());
     println!("-----------------------------------------------------------------");
-
-    // mock (オフライン) なら scripted client，live なら Ollama→OpenAI フォールバック．
-    let client = if args.mock {
-        scripted_mock_client()
-    } else {
-        if let Some(parent) = Path::new(&args.cache_path).parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        build_live_client(&cfg.llm).unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"))
-    };
 
     let out = run_reproduce(&cfg, client, args.mock, &params)
         .unwrap_or_else(|e| panic!("reproduce 失敗: {e}"));
 
-    // S³ の round 別集団指標 (visualize 互換: metrics.csv 名でも置く)．
-    save_metrics(&out.s3.metrics_history, &output_dir);
-    write_csv(
-        &out.s3.metrics_history,
-        format!("{}/s3_metrics.csv", output_dir),
-    )
-    .expect("s3_metrics.csv の書き込みに失敗");
-
-    // 各ベースラインの round 別指標．
-    for (label, history) in &out.baseline_histories {
-        let path = format!("{}/baseline_{}.csv", output_dir, label);
-        write_csv(history, &path).expect("baseline CSV の書き込みに失敗");
+    // S³ の round 別集団指標と run スコープの集約．
+    record::log_simulation(&mut rv, &out.s3);
+    // headline 観測量は数なので指標へ，PASS / off の判定は events.jsonl へ．
+    record::log_observations(&mut rv, &out.summary.checks);
+    record::log_checks(&mut rv, &out.summary.checks);
+    // 4 古典ベースラインは同じ run に入る．S³ と名前が衝突しないよう接頭辞を付ける．
+    for r in &out.baseline_results {
+        record::log_baseline(
+            &mut rv,
+            Some(&record::baseline_prefix(r.model)),
+            &r.history,
+            r.final_round,
+            r.converged,
+        );
     }
-
-    // config.json (visualize のネットワーク描画用)．
-    write_json(
-        &cfg.to_run_config_json(),
-        format!("{}/config.json", output_dir),
-    )
-    .expect("config.json の書き込みに失敗");
-
-    // reproduce_summary.json (observed-vs-paper + ベースライン比較)．
-    write_json(
-        &out.summary,
-        format!("{}/reproduce_summary.json", output_dir),
-    )
-    .expect("reproduce_summary.json の書き込みに失敗");
-
-    let _ = refresh_latest_symlink(&args.output_dir, &format!("reproduce_{}", timestamp));
 
     // --- 観測-参照-PASS の表示 ---
     println!("observed-vs-paper (S³ headline 伝播):");
@@ -839,10 +924,13 @@ fn cmd_reproduce(args: ReproduceArgs) {
         out.summary.llm_model,
         out.summary.cache_hit_rate * 100.0
     );
-    println!("サマリ → {}/reproduce_summary.json", output_dir);
+
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("指標   → {}/metrics.csv", dir.display());
+    println!("帯照合 → {}/events.jsonl", dir.display());
     println!(
         "可視化 → uv run s3-tools reproduce --results-dir {}",
-        output_dir
+        dir.display()
     );
 }
 
@@ -854,10 +942,6 @@ fn cmd_baseline(args: BaselineArgs) {
     let network = parse_network(&args.network).unwrap_or_else(|e| panic!("{}", e));
     let model = parse_baseline(&args.model).unwrap_or_else(|e| panic!("{}", e));
 
-    let timestamp = timestamp();
-    let output_dir = format!("{}/baseline_{}_{}", args.output_dir, args.model, timestamp);
-    fs::create_dir_all(&output_dir).expect("baseline ディレクトリの作成に失敗");
-
     let cfg = Config {
         network,
         population: args.population,
@@ -867,7 +951,6 @@ fn cmd_baseline(args: BaselineArgs) {
         seed_posters: args.seed_posters,
         tol: args.tol,
         seed: Some(args.seed),
-        output_dir: output_dir.clone(),
         ..Config::default()
     };
     let params = BaselineParams {
@@ -876,6 +959,38 @@ fn cmd_baseline(args: BaselineArgs) {
         degroot_self_weight: args.degroot_self_weight,
         ..BaselineParams::default()
     };
+
+    // LLM を 1 度も呼ばないので `llm` ブロックは持たせない．
+    let parameters = BaselineConfigJson {
+        model: model.label().to_string(),
+        network: cfg.network.label().to_string(),
+        population: cfg.population,
+        er_p: cfg.er_p,
+        ws_k: cfg.ws_k,
+        ws_beta: cfg.ws_beta,
+        ws_p_mutual: cfg.ws_p_mutual,
+        ba_m: cfg.ba_m,
+        rounds: cfg.rounds,
+        seed_posters: cfg.seed_posters,
+        tol: cfg.tol,
+        seed: args.seed,
+        lt_theta: params.lt_theta,
+        ic_p: params.ic_p,
+        degroot_self_weight: params.degroot_self_weight,
+        binary_threshold: params.binary_threshold,
+    };
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "baseline")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(args.seed)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
 
     println!(
         "=== Gao et al. (2023) 古典ベースライン ({}) ===",
@@ -889,25 +1004,16 @@ fn cmd_baseline(args: BaselineArgs) {
         cfg.seed_posters,
         args.seed,
     );
-    println!("出力先: {}", output_dir);
+    println!("出力先: {}", rv.dir().display());
     println!("-----------------------------------------------------------------");
 
     let result = run_baseline(&cfg, model, &params);
-
-    write_csv(
+    record::log_baseline(
+        &mut rv,
+        None,
         &result.history,
-        format!("{}/baseline_{}.csv", output_dir, model.label()),
-    )
-    .expect("baseline CSV の書き込みに失敗");
-    write_json(
-        &cfg.to_run_config_json(),
-        format!("{}/config.json", output_dir),
-    )
-    .expect("config.json の書き込みに失敗");
-
-    let _ = refresh_latest_symlink(
-        &args.output_dir,
-        &format!("baseline_{}_{}", args.model, timestamp),
+        result.final_round,
+        result.converged,
     );
 
     let last = result.last();
@@ -919,7 +1025,10 @@ fn cmd_baseline(args: BaselineArgs) {
         result.final_round,
         if result.converged { "Yes" } else { "No" },
     );
-    println!("メトリクス → {}/baseline_{}.csv", output_dir, model.label());
+
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("メトリクス → {}/metrics.csv", dir.display());
+    println!("設定       → {}/config.json", dir.display());
 }
 
 // ---------------------------------------------------------------------------

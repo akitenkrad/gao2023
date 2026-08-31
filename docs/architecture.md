@@ -56,7 +56,7 @@ RNG streams (core layer only):
 - `derive_seed(root, &[0])` → world-init RNG (directed topology generation — including `to_directed`'s mutual/direction draws for WS — and profile / initial-emotion / initial-attitude assignment).
 - `derive_seed(root, &[1])` → engine RNG (`RandomActivationScheduler` shuffle each round).
 
-The LLM layer is **not** under `SimRng`. Its reproducibility comes entirely from the cache: with a warm cache, an identical prompt replays an identical response. `run_metadata.json` records model / endpoint / temperature / seed / cache-hit rate.
+The LLM layer is **not** under `SimRng`. Its reproducibility comes entirely from the cache: with a warm cache, an identical prompt replays an identical response. The model, provider and temperature are recorded in the `llm` block of runvault's `run.json`; the call count and cache-hit rate are run-scope metrics in `metrics.csv`.
 
 ## The LLM client (`socsim-llm`)
 
@@ -99,7 +99,7 @@ Computed every round over the agent map (see `metrics.rs`):
 
 ## Reproduction and classical baselines
 
-The `reproduce` subcommand (`reproduce.rs`) runs S³ once, derives the headline observables from the metric history (attitude rise, cascade growth ratio, final behavior adoption, an emotion-distribution MSED proxy against a reference distribution, and a Pearson Cor proxy of the attitude time series), and checks each against a qualitative band, writing `reproduce_summary.json` with PASS / off verdicts. The targets are qualitative because the local model differs from the paper's GPT.
+The `reproduce` subcommand (`reproduce.rs`) runs S³ once, derives the headline observables from the metric history (attitude rise, cascade growth ratio, final behavior adoption, an emotion-distribution MSED proxy against a reference distribution, and a Pearson Cor proxy of the attitude time series), and checks each against a qualitative band, writing the PASS / off verdicts to `events.jsonl` and the observables themselves to `metrics.csv` as run-scope metrics. The targets are qualitative because the local model differs from the paper's GPT.
 
 For comparison it also runs four classical baselines (`baseline.rs`) on the **same directed follow-graph and seed** (zero LLM calls, bit-deterministic), seeded from the same `seed_posters` set:
 

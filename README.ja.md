@@ -13,7 +13,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．そのため設
 - **決定論的 socsim コア** — 有向網生成・フォロー辺に沿ったメッセージ配送・`RandomActivationScheduler` の活性化順序 (`ctx.rng`, ChaCha20)・指標・収束判定．seed を与えれば bit 単位で再現する．
 - **非決定的 LLM レイヤ** — 感情/態度/行動の同時決定と投稿コンテンツ生成．`socsim-llm` の `CachingClient` (`hash(prompt+model)` → 応答キャッシュ)・`temperature=0`・seed 固定で擬似決定論化する．プロバイダ順序は `FallbackClient` による **Ollama 第一 → OpenAI フォールバック**．
 
-再現性の本体はモデルではなく **キャッシュ** である．ウォームキャッシュは同一応答を再生するため，再実行はコスト 0 かつ安定する．各実行は `run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率を記録する．ローカル既定モデル (`llama3.2:latest`) は論文の GPT 系と異なるため，再現目標は **定性的** (伝播曲線 — 態度割合・感情分布・行動採用・カスケード成長 — の傾向と符号) とし，論文の正確な MSED / Cor 値の一致は狙わない．
+再現性の本体はモデルではなく **キャッシュ** である．ウォームキャッシュは同一応答を再生するため，再実行はコスト 0 かつ安定する．各実行はモデル・provider・温度を runvault の `run.json` の `llm` ブロックに，呼び出し数と cache-hit 率を `metrics.csv` の run スコープ指標に記録する．ローカル既定モデル (`llama3.2:latest`) は論文の GPT 系と異なるため，再現目標は **定性的** (伝播曲線 — 態度割合・感情分布・行動採用・カスケード成長 — の傾向と符号) とし，論文の正確な MSED / Cor 値の一致は狙わない．
 
 ## 有向フォローグラフ
 
@@ -42,7 +42,7 @@ uv sync
 uv run s3-tools visualize
 
 # 実行設定と LLM メタデータの確認
-uv run s3-tools show-experiment-settings --results-dir results/latest
+uv run s3-tools show-experiment-settings
 ```
 
 ### オフラインスモーク (ライブ LLM 不要)
@@ -62,12 +62,12 @@ uv run s3-tools visualize
 
 ## 一括再現と古典ベースライン
 
-`reproduce` は S³ を 1 回実行し，headline 伝播観測量 (態度上昇・カスケード成長・行動採用・感情分布の MSED 代理・態度時系列の Pearson 相関代理) を論文の定性帯と照合して `reproduce_summary.json` に PASS / off を書き出す．比較のため，**同一の有向フォローグラフ・同一シード**で 4 つの古典的拡散・意見ダイナミクス — **Linear Threshold (LT)**，**Independent Cascade (IC)**，**Voter**，**DeGroot** — を実行し (LLM 呼び出し 0 回・bit 決定論的)，`s3-tools reproduce` が LLM 駆動 S³ 曲線と重ねて描画する．`--llm-perception` フラグは Perception を実 LLM 呼び出し化する (候補メッセージを LLM が関連順にランキングする)．既定の規則ベース経路は Perception の LLM 呼び出しを行わない．ローカルモデルは論文の GPT と異なるため再現目標は定性的である．
+`reproduce` は S³ を 1 回実行し，headline 伝播観測量 (態度上昇・カスケード成長・行動採用・感情分布の MSED 代理・態度時系列の Pearson 相関代理) を論文の定性帯と照合して PASS / off を `events.jsonl` に書き出す．比較のため，**同一の有向フォローグラフ・同一シード**で 4 つの古典的拡散・意見ダイナミクス — **Linear Threshold (LT)**，**Independent Cascade (IC)**，**Voter**，**DeGroot** — を実行し (LLM 呼び出し 0 回・bit 決定論的)，`s3-tools reproduce` が LLM 駆動 S³ 曲線と重ねて描画する．`--llm-perception` フラグは Perception を実 LLM 呼び出し化する (候補メッセージを LLM が関連順にランキングする)．既定の規則ベース経路は Perception の LLM 呼び出しを行わない．ローカルモデルは論文の GPT と異なるため再現目標は定性的である．
 
 ```bash
 # オフライン一括再現 (live LLM 不要) + 図
 cargo run --release -- reproduce --mock --quick --seed 42
-uv run s3-tools reproduce --results-dir results/latest
+uv run s3-tools reproduce
 
 # 同一有向網上の古典ベースライン単独実行
 cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42

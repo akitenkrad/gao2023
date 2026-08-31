@@ -97,8 +97,6 @@ pub struct Config {
     pub seed: Option<u64>,
     /// LLM レイヤ設定．
     pub llm: LlmSettings,
-    /// 結果出力ディレクトリ．
-    pub output_dir: String,
 }
 
 impl Default for Config {
@@ -119,15 +117,16 @@ impl Default for Config {
             tol: 1e-9,
             seed: Some(42),
             llm: LlmSettings::default(),
-            output_dir: "results".to_string(),
         }
     }
 }
 
-/// `config.json` (run 用) のシリアライズ表現．
+/// `config.json` の `parameters` に載る S³ の実験条件．
+///
+/// 実行の同一性 (どのサブコマンドか・どこへ出力したか) は runvault の `run.json` が
+/// 持つので，ここには条件だけを置く (`command` / `output_dir` は持たない)．
 #[derive(Serialize)]
 pub struct RunConfigJson {
-    pub command: &'static str,
     pub network: String,
     pub population: usize,
     pub er_p: f64,
@@ -143,14 +142,12 @@ pub struct RunConfigJson {
     pub seed: Option<u64>,
     pub llm_temperature: f32,
     pub llm_seed: u64,
-    pub output_dir: String,
 }
 
 impl Config {
-    /// `config.json` 用の表現を組み立てる．
+    /// `config.json` の `parameters` 用の表現を組み立てる．
     pub fn to_run_config_json(&self) -> RunConfigJson {
         RunConfigJson {
-            command: "run",
             network: self.network.label().to_string(),
             population: self.population,
             er_p: self.er_p,
@@ -166,7 +163,6 @@ impl Config {
             seed: self.seed,
             llm_temperature: self.llm.temperature,
             llm_seed: self.llm.seed,
-            output_dir: self.output_dir.clone(),
         }
     }
 }

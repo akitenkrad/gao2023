@@ -2,13 +2,17 @@
 """
 visualize_sweep.py — Gao et al. (2023) S3 スイープ結果 可視化スクリプト
 
-results/latest (または --sweep_dir 指定先) の sweep_summary.csv を読み，
-network × population の格子について最終集団指標 (positive 態度割合・行動採用率・
-情報カスケード規模・感情強度) を集計し，ヒートマップと折れ線で可視化する．
+sweep 親 run の子 run を集めて network × population の格子を組み直し，最終集団指標
+(positive 態度割合・行動採用率・情報カスケード規模・感情強度) を集計して，
+ヒートマップと折れ線で可視化する．
+
+--sweep_dir を省略すると
+`runvault path --experiment s3 --latest --subcommand sweep`
+が返す run ディレクトリを対象にする (`runvault` が PATH にある必要がある)．
 
 Usage:
     uv run s3-tools visualize-sweep
-    uv run s3-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+    uv run s3-tools visualize-sweep --sweep_dir "$(runvault path --experiment s3 --latest --subcommand sweep)"
 
 Outputs:
     output_dir/
@@ -25,20 +29,18 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from runvault.read import figures_dir, runvault_path
+
+from s3_tools.sweep_summary import sweep_summary_table
+
+# runvault の experiment 名 (Rust 側 record::EXPERIMENT と揃える)．
+EXPERIMENT = "s3"
 
 plt.rcParams["font.family"] = "Hiragino Sans"
 
 COLOR_BG = "#FAFAF8"
 NETWORK_ORDER = ["er", "ws", "ba"]
 NETWORK_COLORS = {"er": "#2196F3", "ws": "#FF9800", "ba": "#4CAF50"}
-
-
-def load_summary(sweep_dir: str) -> pd.DataFrame:
-    """sweep_summary.csv を読み込む．"""
-    path = os.path.join(sweep_dir, "sweep_summary.csv")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"sweep_summary.csv が見つかりません: {path}")
-    return pd.read_csv(path)
 
 
 def _ordered_networks(df: pd.DataFrame) -> list[str]:
@@ -129,14 +131,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--sweep_dir",
         "--sweep-dir",
-        default="results/latest",
-        help="スイープ出力ディレクトリ (default: results/latest)",
+        default=None,
+        help="sweep 親の run ディレクトリ (省略時は runvault path --latest --subcommand sweep)",
+    )
+    p.add_argument(
+        "--results_root",
+        "--results-root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    p.add_argument(
+        "--experiment",
+        default=EXPERIMENT,
+        help=f"runvault の experiment 名 (default: {EXPERIMENT})",
     )
     p.add_argument(
         "--output_dir",
         "--output-dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {sweep_dir}/figures)",
+        help="図の保存先ディレクトリ (default: <experiment>/figures/<run_slug>/)",
     )
     return p.parse_args(argv)
 
@@ -144,16 +157,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.sweep_dir, "figures")
+    sweep_dir = args.sweep_dir
+    if sweep_dir is None:
+        sweep_dir = runvault_path(args.experiment, args.results_root, subcommand="sweep")
+
+    # 図は run が終わった後に作るものなので run ディレクトリの外に置く．
+    out_dir = args.output_dir or figures_dir(sweep_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Gao et al. (2023) S3 スイープ可視化 ===")
-    print(f"スイープ: {args.sweep_dir}")
+    print(f"スイープ: {sweep_dir}")
     print(f"出力先:   {out_dir}")
     print("-------------------------------------------------")
 
-    print("[1/3] sweep_summary.csv を読み込み中 ...")
-    df = load_summary(args.sweep_dir)
+    print("[1/3] 子 run から格子を組み直し中 ...")
+    df = sweep_summary_table(sweep_dir)
     print(f"      network {df['network'].nunique()} 種 × population {df['population'].nunique()} 種")
 
     print("[2/3] ヒートマップを保存中 ...")

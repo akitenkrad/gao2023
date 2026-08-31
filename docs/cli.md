@@ -41,12 +41,28 @@ cargo run --release -- run [OPTIONS]
 | `--cache-path <PATH>` | `.llm_cache/cache.json` | Prompt→response cache file. |
 | `--output-dir <DIR>` | `results` | Output base directory. |
 
-Outputs are written to `results/{timestamp}/`:
+Outputs are written to a runvault run directory. The run directory *is* the output location, so neither a timestamped subdirectory nor a `latest` symlink is created. Ask `runvault` for the path of the most recent finished run (a sweep child also has `subcommand=run`, so add `--standalone` to get a single hand-started one):
 
-- `config.json` — the resolved run configuration.
-- `metrics.csv` — one row per round (`t`, `attitude_positive_frac`, `emotion_calm/moderate/intense`, `behavior_adoption_rate`, `info_cascade_size`).
-- `run_metadata.json` — LLM model / endpoint / temperature / seed / cache-hit rate + a determinism note.
-- `results/latest` → symlink to the newest run directory.
+```bash
+runvault path --experiment s3 --latest --subcommand run --standalone
+```
+
+```
+results/
+└── s3/                                             ← experiment
+    ├── latest_finished -> run_20260405_153000_...   ← the last run that finished
+    ├── run_20260405_153000_9f2c41ab_3b1d/           ← <subcommand>_<time>_<cfg8>_<exec4>
+    │   ├── run.json                                 ← metadata (git commit / env / LLM / paper)
+    │   ├── config.json                              ← envelope; the conditions live under ["parameters"]
+    │   ├── metrics.csv                              ← long form (step / step_unit / scope / name / value)
+    │   ├── status.json                              ← final state and duration
+    │   └── manifest.csv                             ← hashes of artifacts/ and logs/
+    └── figures/                                     ← written by the visualisation scripts (outside the run)
+        └── run_20260405_153000_9f2c41ab_3b1d/
+            └── propagation_timeseries.png
+```
+
+`metrics.csv` is long form, one value per row. The six per-round metrics (`attitude_positive_frac`, `emotion_calm`, `emotion_moderate`, `emotion_intense`, `behavior_adoption_rate`, `info_cascade_size`) carry a `step` with `step_unit=round`; the ones that describe the whole run with a single value (`converged` as 0.0 / 1.0, `final_round`, `llm_calls`, `llm_cache_hits`, `llm_cache_hit_rate`) sit at `scope=run` with no `step`. The LLM's model, provider and temperature live in the `llm` block of `run.json` (no `run_metadata.json` is written).
 
 ### Example (small, real Ollama)
 
@@ -75,11 +91,20 @@ cargo run --release -- sweep [OPTIONS]
 | `--temperature / --llm-seed / --cache-path` | as `run` | LLM settings (the cache is shared across the grid to maximise the hit rate). |
 | `--output-dir <DIR>` | `results` | Output base directory. |
 
-Outputs are written to `results/{timestamp}_sweep/`:
+A sweep is recorded as one parent run plus one child run per condition. The children sit beside the parent in the experiment directory rather than under it, and point at the parent through `lineage.parent_run_uid`. No one-row-per-trial summary CSV is written — the same values are in each child's `metrics.csv`.
 
-- `sweep_summary.csv` — one row per (network, population, run) with the final-round metrics + `cache_hit_rate`.
-- `sweep_config.json` — the sweep configuration.
-- `results/latest` → symlink to the sweep directory.
+```
+results/
+└── s3/
+    ├── sweep_20260405_160827_48d033b7_ee20/   ← the parent; its parameters are the grid definition
+    │   ├── run.json                            ← carries lineage.sweep_id; rng.master_seed is null
+    │   └── config.json
+    ├── run_20260405_160828_174916dd_955d/     ← a child; lineage.parent_run_uid = the parent's run_uid
+    │   └── metrics.csv                         ← its master_seed is the derive_seed-derived seed
+    └── ...
+```
+
+The parent's path comes from `runvault path --experiment s3 --latest --subcommand sweep`. `s3-tools visualize-sweep` takes that parent, collects the children and rebuilds the summary table.
 
 ### Example
 
@@ -129,19 +154,18 @@ The observables and their qualitative bands:
 
 Because the local model differs from the paper's GPT, the targets are **qualitative** (trend and sign), not the paper's exact numbers.
 
-Outputs are written to `results/reproduce_{timestamp}/`:
+Outputs are written to a runvault run directory (`subcommand=reproduce`). S³ and the four baselines share one run:
 
-- `reproduce_summary.json` — observed-vs-paper checks (`observed`, `paper`, `direction`, `pass`), the PASS count, the S³ final fractions, and the four baseline comparisons.
-- `s3_metrics.csv` (and `metrics.csv`) — the S³ round-by-round population metrics.
-- `baseline_{lt,ic,voter,degroot}.csv` — each baseline's round-by-round metrics (`t`, `active_frac`, `mean_opinion`, `cumulative_reached`).
-- `config.json` — the S³ configuration.
-- `figures/` — populated by `uv run s3-tools reproduce`.
+- `metrics.csv` — the S³ round-by-round population metrics, plus each baseline's round-by-round metrics under the names `baseline_{lt,ic,voter,degroot}_{active_frac,mean_opinion,cumulative_reached}` (five models in one run, so the name is what tells them apart). The headline observables (`attitude_rise` and friends) and `checks_passed` / `checks_total` sit at `scope=run` with no `step`.
+- `events.jsonl` — one line per band check (`schema` is `x.gao2023.check`). The direction of the comparison and PASS / off are categories rather than numbers, so they go here. The band each observable is checked against is a qualitative anchor this replication chose, not a value the paper reports, so it is kept out of `reference.csv`, which demands a source.
+- `config.json` — the conditions (under `parameters`).
+- Figures are written by `s3-tools reproduce` into `<experiment>/figures/<run_slug>/`, outside the run.
 
 ### Example (offline)
 
 ```bash
 cargo run --release -- reproduce --mock --quick --seed 42
-uv run s3-tools reproduce --results-dir results/latest
+uv run s3-tools reproduce
 ```
 
 ## `baseline`
@@ -166,7 +190,7 @@ cargo run --release -- baseline --model <lt|ic|voter|degroot> [OPTIONS]
 | `--lt-theta / --ic-p / --degroot-self-weight` | `0.3` / `0.15` / `0.5` | Model parameters. |
 | `--output-dir <DIR>` | `results` | Output base directory. |
 
-Outputs are written to `results/baseline_{model}_{timestamp}/`: `baseline_{model}.csv` and `config.json`.
+Outputs are written to a runvault run directory (`subcommand=baseline`). The per-round metrics in `metrics.csv` are the unprefixed `active_frac` / `mean_opinion` / `cumulative_reached`; which model they belong to is in `config.json` under `parameters.model`. No LLM is ever called, so `run.json` carries no `llm` block.
 
 ```bash
 cargo run --release -- baseline --model ic --network ba --population 200 --rounds 20 --seed 42

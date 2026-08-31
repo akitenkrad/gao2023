@@ -18,7 +18,7 @@ uv run s3-tools visualize
 ウォーム `.llm_cache/` で **同一** コマンドを再実行すると，同一 LLM 応答が再生され (cache-hit ≈ 100%)，決定論的コアが bit 安定かつ高速になる．実行内容の確認:
 
 ```bash
-uv run s3-tools show-experiment-settings --results-dir results/latest
+uv run s3-tools show-experiment-settings
 ```
 
 [アーキテクチャ › 二層決定論](architecture.ja.md#二層決定論) を参照．
@@ -53,10 +53,10 @@ S³ を 1 回実行し，伝播観測量を論文の定性帯と照合し，同�
 ```bash
 # オフライン (live LLM 不要): scripted mock クライアントがパイプラインを端から端まで再現する
 cargo run --release -- reproduce --mock --quick --seed 42
-uv run s3-tools reproduce --results-dir results/latest
+uv run s3-tools reproduce
 ```
 
-`reproduce_summary.json` は observed-vs-paper チェック (態度上昇・カスケード成長・行動採用・感情分布の MSED 代理・態度の Pearson 相関代理) を PASS / off 判定付きで，加えて LT / IC / Voter / DeGroot 比較を記録する．単独のベースラインは `cargo run -- baseline --model {lt|ic|voter|degroot}` で実行できる．
+run ディレクトリの `events.jsonl` が observed-vs-paper チェック (態度上昇・カスケード成長・行動採用・感情分布の MSED 代理・態度の Pearson 相関代理) を PASS / off 判定付きで記録し，`metrics.csv` が観測量と LT / IC / Voter / DeGroot の系列を持つ．単独のベースラインは `cargo run -- baseline --model {lt|ic|voter|degroot}` で実行できる．
 
 ## 6. LLM 駆動 Perception
 

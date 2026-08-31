@@ -9,6 +9,8 @@ dependencies = [
     "pandas>=2.2",
     "networkx>=3.2",
     "socsim-tools",
+    # run ディレクトリの読み方は runvault が持つ (read 側は pandas を使うので extra)．
+    "runvault[read]",
 ]
 
 [project.scripts]
