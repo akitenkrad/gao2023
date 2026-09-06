@@ -173,6 +173,24 @@ pub fn init_world(cfg: &Config, rng: &mut SimRng) -> S3World {
 /// と endpoint は，実際に応答したバックエンドから採る必要があり，それを知っているのは
 /// クライアントを組んだ側だけだからである．
 pub fn run_with_client(cfg: &Config, client: S3Client) -> Result<SimulationResult, String> {
+    run_with_client_observed(cfg, client, |_| {})
+}
+
+/// The same, calling `on_round` once for every propagation round.
+///
+/// The callback is where a caller counts its progress. A round is the unit
+/// because it is the unit the cost is in: one round runs Perception →
+/// Reflection → Posting for every reached agent, each of them a model call. A
+/// whole simulation would be a single tick, which is the granularity that
+/// leaves a live run silent for an hour.
+///
+/// It is given the round number rather than nothing so a caller can report
+/// against the clock rather than against its own tally.
+pub fn run_with_client_observed(
+    cfg: &Config,
+    client: S3Client,
+    mut on_round: impl FnMut(usize),
+) -> Result<SimulationResult, String> {
     let root = cfg.seed.unwrap_or_else(rand::random);
 
     // 初期世界 (root から派生した init RNG; 決定論的 socsim コア層)．
@@ -232,6 +250,7 @@ pub fn run_with_client(cfg: &Config, client: S3Client) -> Result<SimulationResul
         metrics_history.push(Metrics::compute(&w.agents, w.reached.len(), t));
         converged = *report.scratch.get::<bool>("converged").unwrap_or(&false);
         final_round = t;
+        on_round(t);
     })
     .map_err(|e| format!("シミュレーションの実行に失敗: {e}"))?;
 

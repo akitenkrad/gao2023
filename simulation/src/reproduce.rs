@@ -24,11 +24,11 @@
 
 use serde::Serialize;
 
-use crate::baseline::{run_baseline, BaselineModel, BaselineParams};
+use crate::baseline::{run_baseline_observed, BaselineModel, BaselineParams};
 use crate::config::Config;
 use crate::llm::S3Client;
 use crate::metrics::Metrics;
-use crate::simulation::{run_with_client, SimulationResult};
+use crate::simulation::{run_with_client_observed, SimulationResult};
 
 // --------------------------------------------------------------------------- //
 // 論文の定性帯 (qualitative anchors)
@@ -232,23 +232,46 @@ pub fn run_reproduce(
     mock: bool,
     params: &BaselineParams,
 ) -> Result<ReproduceOutput, String> {
-    let s3 = run_with_client(cfg, client)?;
+    run_reproduce_observed(cfg, client, mock, params, |_| {}, |_| {})
+}
+
+/// 同一網・同一シードで比較する古典ベースライン．
+///
+/// 進捗の分母はここから採る — 「4」と書けば，モデルを 1 つ足したときに黙って
+/// ずれる分母になる．
+pub const BASELINE_MODELS: [BaselineModel; 4] = [
+    BaselineModel::LinearThreshold,
+    BaselineModel::IndependentCascade,
+    BaselineModel::Voter,
+    BaselineModel::DeGroot,
+];
+
+/// The same, reporting the S³ rounds and the baselines separately.
+///
+/// Two callbacks and not one, because the two phases do not cost the same: an
+/// S³ round is a model call per reached agent, a baseline round is arithmetic
+/// over the same network. Counting them together would extrapolate the price of
+/// the first onto the second and produce an estimate that is confidently wrong.
+/// Both are counted in rounds, which is what each phase's own cost is in.
+pub fn run_reproduce_observed(
+    cfg: &Config,
+    client: S3Client,
+    mock: bool,
+    params: &BaselineParams,
+    on_s3_round: impl FnMut(usize),
+    mut on_baseline_round: impl FnMut(usize),
+) -> Result<ReproduceOutput, String> {
+    let s3 = run_with_client_observed(cfg, client, on_s3_round)?;
     let checks = build_checks(&s3.metrics_history);
     let passed = checks.iter().filter(|c| c.pass).count();
     let total = checks.len();
     let last = s3.metrics_history.last().unwrap();
 
     // 4 古典ベースラインを同一網・同一シードで実行 (LLM 呼び出し 0 回)．
-    let models = [
-        BaselineModel::LinearThreshold,
-        BaselineModel::IndependentCascade,
-        BaselineModel::Voter,
-        BaselineModel::DeGroot,
-    ];
     let mut baselines = Vec::new();
     let mut baseline_results = Vec::new();
-    for model in models {
-        let r = run_baseline(cfg, model, params);
+    for model in BASELINE_MODELS {
+        let r = run_baseline_observed(cfg, model, params, &mut on_baseline_round);
         let bl = r.last();
         baselines.push(BaselineComparison {
             model: model.label().to_string(),

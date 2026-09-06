@@ -161,6 +161,25 @@ impl BaselineResult {
 /// `cfg.seed_posters` 体の先頭ノードを round 0 の **種** (active / 意見 1.0) とし，
 /// 同期 round で `cfg.rounds` まで進める (進行性モデルは飽和で早期停止)．
 pub fn run_baseline(cfg: &Config, model: BaselineModel, params: &BaselineParams) -> BaselineResult {
+    run_baseline_observed(cfg, model, params, &mut |_| {})
+}
+
+/// The same, calling `on_round` once for every propagation round.
+///
+/// The callback is where a caller counts its progress. A round is the unit
+/// because it is the unit the cost is in: one round walks every node's
+/// neighbours. A whole baseline would be a single tick, and with `--tol 0` a
+/// single baseline runs for as long as `--rounds` says — measured at 4m33s for
+/// 50,000 rounds over 20,000 nodes.
+///
+/// `&mut dyn FnMut` rather than `impl FnMut`, so the one callback can be handed
+/// to whichever of the four models is selected without monomorphising each.
+pub fn run_baseline_observed(
+    cfg: &Config,
+    model: BaselineModel,
+    params: &BaselineParams,
+    on_round: &mut dyn FnMut(usize),
+) -> BaselineResult {
     let root = cfg.seed.unwrap_or_else(rand::random);
 
     // 網は S³ の init_world と同一ストリーム (`&[0]`) で生成し，同じトポロジを得る．
@@ -176,12 +195,14 @@ pub fn run_baseline(cfg: &Config, model: BaselineModel, params: &BaselineParams)
         .collect();
 
     match model {
-        BaselineModel::LinearThreshold => run_linear_threshold(cfg, &ids, &net, &seeds, params),
-        BaselineModel::IndependentCascade => {
-            run_independent_cascade(cfg, root, &ids, &net, &seeds, params)
+        BaselineModel::LinearThreshold => {
+            run_linear_threshold(cfg, &ids, &net, &seeds, params, on_round)
         }
-        BaselineModel::Voter => run_voter(cfg, root, &ids, &net, &seeds, params),
-        BaselineModel::DeGroot => run_degroot(cfg, &ids, &net, &seeds, params),
+        BaselineModel::IndependentCascade => {
+            run_independent_cascade(cfg, root, &ids, &net, &seeds, params, on_round)
+        }
+        BaselineModel::Voter => run_voter(cfg, root, &ids, &net, &seeds, params, on_round),
+        BaselineModel::DeGroot => run_degroot(cfg, &ids, &net, &seeds, params, on_round),
     }
 }
 
@@ -236,6 +257,7 @@ fn run_linear_threshold(
     net: &DiSocialNetwork,
     seeds: &BTreeSet<AgentId>,
     params: &BaselineParams,
+    on_round: &mut dyn FnMut(usize),
 ) -> BaselineResult {
     let n = ids.len();
     let mut active: BTreeSet<AgentId> = seeds.clone();
@@ -264,6 +286,7 @@ fn run_linear_threshold(
             active.insert(*v);
         }
         final_round = t;
+        on_round(t);
         history.push(active_metrics(t, &active, n, active.len()));
         if newly.is_empty() {
             converged = true;
@@ -293,6 +316,7 @@ fn run_independent_cascade(
     net: &DiSocialNetwork,
     seeds: &BTreeSet<AgentId>,
     params: &BaselineParams,
+    on_round: &mut dyn FnMut(usize),
 ) -> BaselineResult {
     let n = ids.len();
     let mut rng = SimRng::from_seed(derive_seed(root, &[RNG_BASELINE_DYN]));
@@ -325,6 +349,7 @@ fn run_independent_cascade(
         }
         frontier = newly.clone();
         final_round = t;
+        on_round(t);
         history.push(active_metrics(t, &active, n, active.len()));
         if newly.is_empty() {
             converged = true;
@@ -353,6 +378,7 @@ fn run_voter(
     net: &DiSocialNetwork,
     seeds: &BTreeSet<AgentId>,
     params: &BaselineParams,
+    on_round: &mut dyn FnMut(usize),
 ) -> BaselineResult {
     let mut rng = SimRng::from_seed(derive_seed(root, &[RNG_BASELINE_DYN]));
     let mut opinion: BTreeMap<AgentId, f64> = ids
@@ -386,6 +412,7 @@ fn run_voter(
         let changed = next != opinion;
         opinion = next;
         final_round = t;
+        on_round(t);
         history.push(opinion_metrics(
             t,
             &opinion,
@@ -418,6 +445,7 @@ fn run_degroot(
     net: &DiSocialNetwork,
     seeds: &BTreeSet<AgentId>,
     params: &BaselineParams,
+    on_round: &mut dyn FnMut(usize),
 ) -> BaselineResult {
     let w = params.degroot_self_weight.clamp(0.0, 1.0);
     let mut opinion: BTreeMap<AgentId, f64> = ids
@@ -454,6 +482,7 @@ fn run_degroot(
         }
         opinion = next;
         final_round = t;
+        on_round(t);
         history.push(opinion_metrics(
             t,
             &opinion,

@@ -17,14 +17,14 @@ use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use runvault::{Lineage, Run, RunOptions};
+use runvault::{Lineage, Run, RunOptions, Stage};
 
-use s3_simulation::baseline::{parse_baseline, run_baseline, BaselineParams};
+use s3_simulation::baseline::{parse_baseline, run_baseline_observed, BaselineParams};
 use s3_simulation::config::{parse_network, Config, LlmSettings, NetworkKind, RunConfigJson};
 use s3_simulation::llm::{build_live_client, wrap_client, S3Client};
 use s3_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID};
-use s3_simulation::reproduce::run_reproduce;
-use s3_simulation::simulation::run_with_client;
+use s3_simulation::reproduce::{run_reproduce_observed, BASELINE_MODELS};
+use s3_simulation::simulation::run_with_client_observed;
 use socsim_llm::mock::ScriptedClient;
 use socsim_llm::{LlmClient, PromptCache};
 
@@ -541,7 +541,17 @@ fn cmd_run(args: RunArgs) {
     println!("出力先: {}", rv.dir().display());
     println!("-----------------------------------------------------------------");
 
-    let result = run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    // 進捗の 1 単位は 1 ラウンド．費用がそこにあるからで，1 ラウンドは到達した
+    // 全エージェントについて Perception → Reflection → Posting を回し，その 1 つ
+    // 1 つがモデル呼び出しになる．実行 1 本を 1 単位にすると，ライブの 1 本は
+    // 0/1 と出したきり終わりまで黙る．収束すれば rounds に届かずに閉じるが，
+    // それは «達した数» を報告しているだけで 100% を超えることはない．
+    let mut stage = rv.stage("rounds", cfg.rounds);
+    let result = run_with_client_observed(&cfg, client, |_| stage.tick())
+        .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    // manifest.csv は finish() で封をされる．その後に 1 行足せば，manifest が
+    // 食い違うダイジェストを持つことになる．
+    stage.close();
     record::log_simulation(&mut rv, &result);
 
     let last = result.metrics_history.last().unwrap();
@@ -640,6 +650,14 @@ fn cmd_sweep(args: SweepArgs) {
     println!("出力先: {}", parent.dir().display());
     println!("-----------------------------------------------------------------");
 
+    // グリッド全体で stage を 1 つ．条件ごとに開け直すと小さな 100% が並ぶだけで，
+    // スイープ全体のどこにいるかは分からない．掃引しているのは網の種別と人口で，
+    // 人口はラウンドあたりのモデル呼び出し数を変える — が，ここでは重みを置かない．
+    // 1 呼び出しの所要はモデル・エンドポイント・キャッシュの当たり方で決まり，
+    // 走らせる前には誰も知らないので，人口比を重みにしても «測っていない費用
+    // モデル» にしかならない．数えたうえで，30 秒の上限が沈黙を防ぐ．
+    let mut stage = parent.stage("rounds", n_total * args.rounds);
+
     let mut summary_rows: Vec<SweepRow> = Vec::with_capacity(n_total);
     let mut done = 0usize;
 
@@ -707,8 +725,8 @@ fn cmd_sweep(args: SweepArgs) {
                 )
                 .expect("runvault: 子 run の開始に失敗");
 
-                let result =
-                    run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+                let result = run_with_client_observed(&cfg, client, |_| stage.tick())
+                    .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
                 record::log_simulation(&mut child, &result);
 
                 let last = result.metrics_history.last().unwrap();
@@ -761,6 +779,8 @@ fn cmd_sweep(args: SweepArgs) {
             avg_casc
         );
     }
+
+    stage.close();
 
     let dir = parent
         .finish()
@@ -866,8 +886,34 @@ fn cmd_reproduce(args: ReproduceArgs) {
     println!("出力先: {}", rv.dir().display());
     println!("-----------------------------------------------------------------");
 
-    let out = run_reproduce(&cfg, client, args.mock, &params)
-        .unwrap_or_else(|e| panic!("reproduce 失敗: {e}"));
+    // 2 つの stage に分ける．S³ の 1 ラウンドは到達エージェントぶんのモデル
+    // 呼び出しで，ベースラインは同じ網の上の算術なので，費用が桁で違う．1 つに
+    // まとめると前者の値段を後者に外挿して «自信をもって外れた見積もり» を出す．
+    // どちらもラウンドで数える．`--tol 0` を渡せばベースラインも `--rounds` の
+    // ぶんだけ回り続けるので (実測: 20,000 ノード・50,000 ラウンドで 4m33s)，
+    // 1 本 = 1 単位では 4 個の粒しか出ない．
+    // ベースライン側の stage は最初の 1 本が終わるまで開けない．先に開けると
+    // その «経過時間» が S³ の全時間を含んでしまい，1 本目で «elapsed 30m00s，
+    // eta 1h30m» という，まさに避けたい種類の見積もりを出す．
+    let mut s3_stage = rv.stage("s3", cfg.rounds);
+    let mut baseline_stage: Option<Stage> = None;
+    let out = run_reproduce_observed(
+        &cfg,
+        client,
+        args.mock,
+        &params,
+        |_| s3_stage.tick(),
+        |_| {
+            baseline_stage
+                .get_or_insert_with(|| rv.stage("baselines", BASELINE_MODELS.len() * cfg.rounds))
+                .tick()
+        },
+    )
+    .unwrap_or_else(|e| panic!("reproduce 失敗: {e}"));
+    s3_stage.close();
+    if let Some(stage) = baseline_stage {
+        stage.close();
+    }
 
     // S³ の round 別集団指標と run スコープの集約．
     record::log_simulation(&mut rv, &out.s3);
@@ -1007,7 +1053,21 @@ fn cmd_baseline(args: BaselineArgs) {
     println!("出力先: {}", rv.dir().display());
     println!("-----------------------------------------------------------------");
 
-    let result = run_baseline(&cfg, model, &params);
+    // 進捗の 1 単位は 1 ラウンド．1 ラウンドは全ノードの近傍を歩くだけなので
+    // どのラウンドも同じ費用であり，重みではなく数える．`--tol` で早く収束すれば
+    // rounds に届かずに閉じるが，それは «達した数» を報告しているだけである．
+    //
+    // 網の生成はこの stage の外にある．BA 網は人口が大きいと生成そのものが
+    // 支配的になり (実測: 100,000 ノードで rounds=5 が 2m15s，rounds=500 が
+    // 2m18s)，そこは socsim の中の 1 回の呼び出しなのでここからは数えられない．
+    // それでも stage は生成の «前» に開ける．開けておけば «何ラウンドを回す
+    // つもりか» が 1 行出るのに対し，最初の tick まで遅らせると生成のあいだ
+    // 完全な無音になる — 1 行は 0 行に勝る．代償は最初の数行の eta が生成時間を
+    // 抱き込んで大きく出ることで，これはラウンドが進むにつれて解消する
+    // (実測: 20,000 ノード・5,000 ラウンドで 5% 時点の eta 1m25s に対し実際は 30s)．
+    let mut stage = rv.stage("rounds", cfg.rounds);
+    let result = run_baseline_observed(&cfg, model, &params, &mut |_| stage.tick());
+    stage.close();
     record::log_baseline(
         &mut rv,
         None,
