@@ -1,3 +1,299 @@
-# Metric descriptions are not written yet (MYTASK-3382). Until they are,
-# runvault records undeclared metrics instead of refusing them.
-require_docs = false
+# 指標が何を測っているか (runvault の宣言．rs-runvault docs/metrics.ja.md)．
+#
+# 名前は `simulation/src/record.rs`，`simulation/src/baseline.rs`，および
+# `simulation/src/reproduce.rs` が書いているものと一致していなければならない．
+# `reproduce` の baseline 名は 4 模型の列挙から取りうる全組合せを展開している．
+#
+# 態度・感情・行動・到達規模は伝播過程の記述量なので `direction = "none"` とする．
+# 定性的アンカーの観測量だけは，照合で良いと定めた向きを書く．
+
+# --- S³ のラウンド指標 ----------------------------------------------------
+
+[metrics."attitude_positive_frac"]
+meaning   = "positive 態度を持つエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."emotion_calm"]
+meaning   = "calm 感情状態にあるエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."emotion_moderate"]
+meaning   = "moderate 感情状態にあるエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."emotion_intense"]
+meaning   = "intense 感情状態にあるエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."behavior_adoption_rate"]
+meaning   = "post または repost を選んだエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."info_cascade_size"]
+meaning   = "seed 投稿から累積して情報が到達したエージェントの数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+# --- S³ の run 全体と LLM の呼び出し -------------------------------------
+
+[metrics."converged"]
+meaning   = "集団状態が収束しきい値内に入って停止したなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."final_round"]
+meaning   = "停止したときの最終ラウンド番号"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_calls"]
+meaning   = "この run が行った LLM の呼び出し回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hits"]
+meaning   = "LLM 呼び出しのうちキャッシュで応答した回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hit_rate"]
+meaning   = "LLM 呼び出しのうちキャッシュで応答した割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# --- baseline 単独実行 -----------------------------------------------------
+
+[metrics."active_frac"]
+meaning   = "古典ベースラインで active または positive 状態にあるノードの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_opinion"]
+meaning   = "古典ベースラインにおけるノード意見値の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."cumulative_reached"]
+meaning   = "古典ベースラインで累積して到達したノードの数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+# --- reproduce に同居する古典ベースライン --------------------------------
+#
+# 接頭辞は `BaselineModel::label()` の有限 4 値である．
+
+# Linear Threshold
+
+[metrics."baseline_lt_active_frac"]
+meaning   = "Linear Threshold ベースラインで active または positive 状態にあるノードの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_lt_mean_opinion"]
+meaning   = "Linear Threshold ベースラインにおけるノード意見値の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_lt_cumulative_reached"]
+meaning   = "Linear Threshold ベースラインで累積して到達したノードの数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_lt_final_round"]
+meaning   = "Linear Threshold ベースラインが停止した最終ラウンド番号"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_lt_converged"]
+meaning   = "Linear Threshold ベースラインが収束して停止したなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# Independent Cascade
+
+[metrics."baseline_ic_active_frac"]
+meaning   = "Independent Cascade ベースラインで active または positive 状態にあるノードの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_ic_mean_opinion"]
+meaning   = "Independent Cascade ベースラインにおけるノード意見値の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_ic_cumulative_reached"]
+meaning   = "Independent Cascade ベースラインで累積して到達したノードの数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_ic_final_round"]
+meaning   = "Independent Cascade ベースラインが停止した最終ラウンド番号"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_ic_converged"]
+meaning   = "Independent Cascade ベースラインが収束して停止したなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# Voter
+
+[metrics."baseline_voter_active_frac"]
+meaning   = "Voter ベースラインで active または positive 状態にあるノードの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_voter_mean_opinion"]
+meaning   = "Voter ベースラインにおけるノード意見値の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_voter_cumulative_reached"]
+meaning   = "Voter ベースラインで累積して到達したノードの数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_voter_final_round"]
+meaning   = "Voter ベースラインが停止した最終ラウンド番号"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_voter_converged"]
+meaning   = "Voter ベースラインが収束して停止したなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# DeGroot
+
+[metrics."baseline_degroot_active_frac"]
+meaning   = "DeGroot ベースラインで active または positive 状態にあるノードの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_degroot_mean_opinion"]
+meaning   = "DeGroot ベースラインにおけるノード意見値の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."baseline_degroot_cumulative_reached"]
+meaning   = "DeGroot ベースラインで累積して到達したノードの数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_degroot_final_round"]
+meaning   = "DeGroot ベースラインが停止した最終ラウンド番号"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."baseline_degroot_converged"]
+meaning   = "DeGroot ベースラインが収束して停止したなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# --- reproduce の定性的アンカー ------------------------------------------
+
+[metrics."attitude_rise"]
+meaning   = "終端の positive 態度割合から初期割合を引いた上昇幅"
+unit      = "ratio"
+direction = "up"
+range     = [-1.0, 1.0]
+scope     = ["run"]
+
+[metrics."cascade_growth_ratio"]
+meaning   = "終端の情報カスケード規模を初期規模で割った成長倍率"
+unit      = "ratio"
+direction = "up"
+scope     = ["run"]
+
+[metrics."behavior_adoption_final"]
+meaning   = "終端で post または repost を選んだエージェントの割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."emotion_msed"]
+meaning   = "終端感情分布と論文参照分布の平均二乗誤差"
+unit      = "squared_ratio"
+direction = "down"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."attitude_corr"]
+meaning   = "positive 態度割合の時系列と単調増加参照列の Pearson 相関"
+unit      = "correlation"
+direction = "up"
+range     = [-1.0, 1.0]
+scope     = ["run"]
+
+[metrics."checks_passed"]
+meaning   = "定性的アンカーの許容帯に収まった観測量の数"
+unit      = "count"
+direction = "up"
+scope     = ["run"]
+
+[metrics."checks_total"]
+meaning   = "照合した定性的アンカーの総数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
