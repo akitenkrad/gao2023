@@ -53,6 +53,11 @@ cargo run --release --example mock_smoke -- results
 uv run s3-tools visualize
 ```
 
+
+## Scratch runs
+
+Use `--scratch` for development, debugging, and smoke-test runs. Scratch runs are created under `results/_scratch/`, are never synced to the vault, and the latest scratch run can be located with `runvault path --scratch`.
+
 ## Documentation
 
 - [Use cases](docs/usecases.md) — what you can do with this project, with pointers to the rest of the docs.
