@@ -496,6 +496,7 @@ fn cmd_run(args: RunArgs, scratch: bool) {
             temperature: args.temperature,
             seed: args.llm_seed,
             cache_path: Some(args.cache_path.clone()),
+            think: None,
         },
     };
 
@@ -696,6 +697,7 @@ fn cmd_sweep(args: SweepArgs, scratch: bool) {
                         temperature: args.temperature,
                         seed: args.llm_seed,
                         cache_path: Some(args.cache_path.clone()),
+                        think: None,
                     },
                 };
 
@@ -830,6 +832,7 @@ fn cmd_reproduce(args: ReproduceArgs, scratch: bool) {
             } else {
                 Some(args.cache_path.clone())
             },
+            think: None,
         },
         ..Config::default()
     };
